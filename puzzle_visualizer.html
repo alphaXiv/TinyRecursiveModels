@@ -72,6 +72,8 @@
   <div id="groupList"></div>
   <div id="puzzleList"></div>
   <div class="puzzle-display" id="puzzleView"></div>
+  <button id="predictBtn" style="margin-top: 1rem; padding: 10px 20px; font-size: 16px;">Predict Solved Maze</button>
+  <div id="predictionResult" style="margin-top: 1rem;"></div>
 </div>
 
 <!-- 
@@ -420,6 +422,56 @@ function indexToColor(value) {
     return palette[colorIdx];
   }
   return "#FFFFFF"; // fallback
+}
+
+// Predict button functionality
+document.getElementById('predictBtn').addEventListener('click', async () => {
+  const resultDiv = document.getElementById('predictionResult');
+  resultDiv.innerHTML = 'Predicting...';
+
+  // For demo, assume current puzzle is loaded
+  // In real implementation, extract the input grid from the displayed puzzle
+  const dummyInput = {
+    grid: [
+      [0, 1, 0],
+      [1, 0, 1],
+      [0, 1, 0]
+    ]
+  };
+
+  try {
+    const response = await fetch('/predict', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(dummyInput)
+    });
+    const data = await response.json();
+    const solved = data.solved_maze;
+    resultDiv.innerHTML = '<h3>Solved Maze:</h3>' + renderGrid(solved);
+  } catch (error) {
+    resultDiv.innerHTML = 'Error: ' + error.message;
+  }
+});
+
+function renderGrid(grid) {
+  let html = '<div style="display: inline-block; border: 1px solid #000;">';
+  for (let row of grid) {
+    html += '<div style="display: flex;">';
+    for (let cell of row) {
+      let color;
+      if (cell === 1) color = "#000000"; // wall
+      else if (cell === 2) color = "#FF0000"; // start
+      else if (cell === 3) color = "#00FF00"; // goal
+      else if (cell === 4) color = "#FFFFFF"; // open
+      else color = "#FFFFFF"; // fallback
+      html += `<div style="width: 20px; height: 20px; background-color: ${color}; border: 1px solid #ccc;"></div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
 }
 </script>
 </body>
