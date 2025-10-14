@@ -131,8 +131,8 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
         model: nn.Module = model_cls(model_cfg)
         print(model)
         model = loss_head_cls(model, **config.arch.loss.__pydantic_extra__)  # type: ignore
-        if "DISABLE_COMPILE" not in os.environ:
-            model = torch.compile(model)  # type: ignore
+        # if "DISABLE_COMPILE" not in os.environ:
+        #     model = torch.compile(model)  # type: ignore
 
         # Load checkpoint
         if rank == 0:
