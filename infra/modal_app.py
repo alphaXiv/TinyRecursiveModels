@@ -12,29 +12,46 @@ Notes:
 import os
 import subprocess
 import sys
-from typing import List
-
-import numpy as np
-import torch
-from PIL import Image
 from huggingface_hub import hf_hub_download
-
 import modal
+import shutil
 
+# Create a persistent volume for repo and data
+volume = modal.Volume.from_name("tinyrecursive-data", create_if_missing=True)
 
 IMAGE = (
-    modal.Image.debian_slim().pip_install("fastapi[standard]").run_commands(
+    modal.Image.debian_slim()
+    .run_commands(
         "apt-get update",
         "apt-get install -y git",
         "pip install --upgrade pip"
-    ).pip_install([
+    )
+    .pip_install("fastapi[standard]")
+    .pip_install("uvicorn[standard]")
+    .pip_install([
+        "wandb",
         "pyyaml",
         "numpy",
         "Pillow",
         "huggingface_hub",
         "tqdm",
-        "pandas"
-    ]).pip_install([
+        "pandas",
+        "einops",
+        "coolname",
+        "pydantic",
+        "argdantic",
+        "omegaconf",
+        "hydra-core",
+        "packaging",
+        "ninja",
+        "wheel",
+        "setuptools",
+        "setuptools-scm",
+        "pydantic-core",
+        "numba",
+        "triton"
+    ])
+    .pip_install([
         "torch",
         "torchvision",
         "torchaudio"
@@ -45,18 +62,20 @@ APP_NAME = "tinyrecursive-eval"
 app = modal.App(name=APP_NAME, image=IMAGE)
 
 
-@app.function(image=IMAGE)
+@app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def prepare_dataset():
     """Prepare the maze dataset on Modal."""
     
-    # Clone the repo
+    # Use persistent data directory
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/tmp/repo"
+    repo_dir = "/data/repo"
     
-    if not os.path.exists(repo_dir):
-        print(f"Cloning repo from {repo_url}...")
-        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    if os.path.exists(repo_dir):
+        shutil.rmtree(repo_dir)
+        
+    print(f"Cloning repo from {repo_url}...")
+    subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
     
     # Change to repo directory
     os.chdir(repo_dir)
@@ -65,37 +84,39 @@ def prepare_dataset():
     subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
     
     # Run dataset preparation
-    cmd = ["python", "dataset/build_maze_dataset.py", "--config", "config/cfg_pretrain.yaml"]
+    cmd = ["python", "dataset/build_maze_dataset.py"]
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     return {"status": "Dataset prepared successfully"}
-@app.function(image=IMAGE)
+@app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def download_weights():
     """Download pre-trained weights from Hugging Face."""
     
-    # Clone the repo
+    # Use persistent data directory
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/tmp/repo"
+    repo_dir = "/data/repo"
     
     if not os.path.exists(repo_dir):
         print(f"Cloning repo from {repo_url}...")
         subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
     
     # Create data directory if it doesn't exist
-    data_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
+    data_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights")
     os.makedirs(data_dir, exist_ok=True)
     
     # Download weights
     checkpoint_path = hf_hub_download(
         repo_id="YuvrajSingh9886/maze-hard-trm",
-        filename="step_50000",
+        filename="step_32550",
         local_dir=data_dir
     )
     return {"status": "Weights downloaded", "path": checkpoint_path}
-@app.function(image=IMAGE, gpu="A100:2", timeout=3600)
+
+
+@app.function(image=IMAGE, gpu="A100", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
-def run_eval_local(checkpoint_path: str, dataset_path: str, out_dir: str = "out"):
+def run_eval_local(checkpoint_path: str="dataset/maze-30x30-hard-1k/test", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out"):
     """Run evaluation locally on mounted repo data.
 
     Args:
@@ -107,9 +128,9 @@ def run_eval_local(checkpoint_path: str, dataset_path: str, out_dir: str = "out"
       dict with results
     """
     
-    # Clone the repo
+    # Use persistent data directory
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/tmp/repo"
+    repo_dir = "/data/repo"
     
     if not os.path.exists(repo_dir):
         print(f"Cloning repo from {repo_url}...")
@@ -117,17 +138,16 @@ def run_eval_local(checkpoint_path: str, dataset_path: str, out_dir: str = "out"
     
     # Change to repo directory
     os.chdir(repo_dir)
-    
-    # Install requirements
-    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
-    
+ 
     # Set output dir
     local_out = os.path.join(repo_dir, out_dir)
     os.makedirs(local_out, exist_ok=True)
-
+    # shutil.move("scripts/run_eval_only.py", "./")
+    # subprocess.run(["mv", "scripts/run_eval_only.py", "../"], stdout=sys.stdout, stderr=sys.stderr, check=True)
+    subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # Run evaluation using subprocess with torchrun for multi-GPU
     cmd = [
-        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -239,14 +259,14 @@ function renderGrid(grid) {
     return modal.asgi.Response(html_content, media_type="text/html")
 
 
-@app.function()
+@app.function(volumes={"/data": volume})
 @modal.fastapi_endpoint()
 def get_asset(filename: str):
     """Serve asset files from the repo."""
     
-    # Clone the repo if needed
+    # Use persistent data directory
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/tmp/repo"
+    repo_dir = "/data/repo"
     
     if not os.path.exists(repo_dir):
         print(f"Cloning repo from {repo_url}...")
