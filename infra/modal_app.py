@@ -10,6 +10,15 @@ Notes:
 """
 
 import os
+import subprocess
+import sys
+from typing import List
+
+import numpy as np
+import torch
+from PIL import Image
+from huggingface_hub import hf_hub_download
+
 import modal
 
 
@@ -40,34 +49,50 @@ app = modal.App(name=APP_NAME, image=IMAGE)
 @modal.fastapi_endpoint(docs=True)
 def prepare_dataset():
     """Prepare the maze dataset on Modal."""
-    import subprocess
-    import sys
-
+    
+    # Clone the repo
+    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    repo_dir = "/tmp/repo"
+    
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    
+    # Change to repo directory
+    os.chdir(repo_dir)
+    
+    # Install requirements
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+    
     # Run dataset preparation
-    cmd = ["python", "dataset/build_maze_dataset.py"]
+    cmd = ["python", "dataset/build_maze_dataset.py", "--config", "config/cfg_pretrain.yaml"]
     print(f"Running: {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd="/repo", stdout=sys.stdout, stderr=sys.stderr, check=True)
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     return {"status": "Dataset prepared successfully"}
-
-
 @app.function(image=IMAGE)
 @modal.fastapi_endpoint(docs=True)
 def download_weights():
     """Download pre-trained weights from Hugging Face."""
-    from huggingface_hub import hf_hub_download
-
+    
+    # Clone the repo
+    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    repo_dir = "/tmp/repo"
+    
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    
     # Create data directory if it doesn't exist
-    os.makedirs("/repo/data/maze-30x30-hard-1k", exist_ok=True)
-
+    data_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
+    os.makedirs(data_dir, exist_ok=True)
+    
     # Download weights
     checkpoint_path = hf_hub_download(
         repo_id="YuvrajSingh9886/maze-hard-trm",
         filename="step_50000",
-        local_dir="/repo/data/maze-30x30-hard-1k"
+        local_dir=data_dir
     )
     return {"status": "Weights downloaded", "path": checkpoint_path}
-
-
 @app.function(image=IMAGE, gpu="A100:2", timeout=3600)
 @modal.fastapi_endpoint(docs=True)
 def run_eval_local(checkpoint_path: str, dataset_path: str, out_dir: str = "out"):
@@ -81,18 +106,30 @@ def run_eval_local(checkpoint_path: str, dataset_path: str, out_dir: str = "out"
     Returns:
       dict with results
     """
-
+    
+    # Clone the repo
+    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    repo_dir = "/tmp/repo"
+    
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    
+    # Change to repo directory
+    os.chdir(repo_dir)
+    
+    # Install requirements
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+    
     # Set output dir
-    local_out = os.path.join("/repo", out_dir)
+    local_out = os.path.join(repo_dir, out_dir)
     os.makedirs(local_out, exist_ok=True)
 
     # Run evaluation using subprocess with torchrun for multi-GPU
-    import subprocess
-    import sys
     cmd = [
         "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
-        "--checkpoint", os.path.join("/repo", checkpoint_path),
-        "--dataset", os.path.join("/repo", dataset_path),
+        "--checkpoint", os.path.join(repo_dir, checkpoint_path),
+        "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds"
     ]
@@ -205,8 +242,19 @@ function renderGrid(grid) {
 @app.function()
 @modal.fastapi_endpoint()
 def get_asset(filename: str):
+    """Serve asset files from the repo."""
+    
+    # Clone the repo if needed
+    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    repo_dir = "/tmp/repo"
+    
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    
     try:
-        with open(f"/repo/assets/{filename}", "rb") as f:
+        asset_path = os.path.join(repo_dir, "assets", filename)
+        with open(asset_path, "rb") as f:
             content = f.read()
         return modal.asgi.Response(content, media_type="application/javascript" if filename.endswith(".js") else "text/plain")
     except FileNotFoundError:
