@@ -304,7 +304,57 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
 
     solved_maze = np.asarray(grid_arr).reshape((side, side)).tolist()
 
-    return {"solved_maze": solved_maze, "source_file": preds_path, "index": ret_index}
+    # Prepare input_maze: if user provided a grid, echo it; otherwise load corresponding inputs shard
+    input_maze = None
+    if provided_grid is not None:
+        # Use same square reshape logic for the provided input
+        in_arr = np.array(provided_grid)
+        L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else len(in_arr)
+        side_in = int(math.sqrt(L_in))
+        if side_in * side_in != L_in:
+            side_in = side  # fall back to output side if not a perfect square
+            L_in = side_in * side_in
+            in_arr = in_arr.flat[:L_in]
+        input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
+    else:
+        # Load matching inputs file by replacing suffix
+        try:
+            inputs_path = preds_path.replace("_all_preds.", "_all_inputs.")
+            import torch
+            in_data = torch.load(inputs_path, map_location='cpu')
+            # Common key name is 'inputs'
+            if isinstance(in_data, dict):
+                if 'inputs' in in_data:
+                    inputs_tensor = in_data['inputs']
+                else:
+                    # Try a best-effort: take the first tensor-like value
+                    inputs_tensor = None
+                    for v in in_data.values():
+                        if hasattr(v, 'shape'):
+                            inputs_tensor = v
+                            break
+                    if inputs_tensor is None:
+                        raise KeyError("No 'inputs' key in inputs shard")
+            else:
+                inputs_tensor = in_data
+
+            # Use same index ret_index (guaranteed set in this branch)
+            sel_in = inputs_tensor[ret_index]
+            try:
+                in_arr = sel_in.cpu().numpy()
+            except Exception:
+                in_arr = np.array(sel_in)
+            L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 1 else (in_arr.size if hasattr(in_arr, 'size') else len(in_arr))
+            side_in = int(math.sqrt(L_in))
+            if side_in * side_in != L_in:
+                side_in = side
+                L_in = side_in * side_in
+                in_arr = np.asarray(in_arr).reshape(-1)[:L_in]
+            input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
+        except Exception:
+            input_maze = None
+
+    return {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index}
 
 
 # @app.function(volumes={"/data": volume})
