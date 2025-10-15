@@ -1,3 +1,33 @@
+# Compatibility shim: restore a few deprecated numpy aliases that some
+# third-party libraries (e.g. networkx, older packages) still reference
+# (like `np.int`, `np.bool`). This avoids AttributeError on import when
+# running with newer numpy versions that may have removed those names.
+try:
+    import numpy as np
+
+    _np_compat_aliases = {
+        'bool': bool,
+        'int': int,
+        'float': float,
+        'object': object,
+        'str': str,
+        'long': int,
+        'unicode': str,
+        'bytes': bytes,
+    }
+
+    for _name, _val in _np_compat_aliases.items():
+        try:
+            setattr(np, _name, _val)
+        except Exception:
+            # Best-effort: ignore if we cannot set the attribute.
+            pass
+except Exception:
+    # If numpy isn't available or something else goes wrong, continue
+    # without blocking imports — downstream imports may still error.
+    print("Couldn't load numpy. Pls check the required version and/or if it's installed correctly.")
+
+import torch
 from typing import Optional, Any, Sequence, List
 from dataclasses import dataclass
 import os
@@ -6,7 +36,6 @@ import yaml
 import shutil
 import copy
 
-import torch
 import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
@@ -131,8 +160,8 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
         model: nn.Module = model_cls(model_cfg)
         print(model)
         model = loss_head_cls(model, **config.arch.loss.__pydantic_extra__)  # type: ignore
-        # if "DISABLE_COMPILE" not in os.environ:
-        #     model = torch.compile(model)  # type: ignore
+        if "DISABLE_COMPILE" not in os.environ:
+            model = torch.compile(model)  # type: ignore
 
         # Load checkpoint
         if rank == 0:

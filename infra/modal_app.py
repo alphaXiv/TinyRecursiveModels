@@ -114,9 +114,9 @@ def download_weights():
     return {"status": "Weights downloaded", "path": checkpoint_path}
 
 
-@app.function(image=IMAGE, gpu="A100", volumes={"/data": volume}, timeout=3600)
+@app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
-def run_eval_local(checkpoint_path: str="dataset/maze-30x30-hard-1k/test", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out"):
+def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out"):
     """Run evaluation locally on mounted repo data.
 
     Args:
@@ -144,7 +144,7 @@ def run_eval_local(checkpoint_path: str="dataset/maze-30x30-hard-1k/test", datas
     os.makedirs(local_out, exist_ok=True)
     # shutil.move("scripts/run_eval_only.py", "./")
     # subprocess.run(["mv", "scripts/run_eval_only.py", "../"], stdout=sys.stdout, stderr=sys.stderr, check=True)
-    subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=True)
+    subprocess.run(["ls", "data", "maze-30x30-hard-1k"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # Run evaluation using subprocess with torchrun for multi-GPU
     cmd = [
         "torchrun", "--nproc_per_node=2", "run_eval_only.py",
