@@ -81,7 +81,9 @@
    Make sure 'assets/npyjs.js' is the unbundled or UMD version that doesn't
    contain "import" statements. 
 -->
-<script src="assets/npyjs.js"></script>
+
+<!-- Load npyjs via the app asset endpoint so the server serves the file directly -->
+<script src="/get_asset?filename=npyjs.js"></script>
 
 <script>
 /***************************************************************************

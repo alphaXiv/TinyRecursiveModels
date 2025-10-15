@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Maze Predictions Visualizer</title>
+  <style>
+    body { font-family: sans-serif; margin: 16px; }
+    .controls { margin-bottom: 12px; }
+    .grid-canvas { border: 1px solid #333; margin-top: 8px; }
+    #status { margin-top: 8px; }
+    button { padding: 8px 12px; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Maze Predictions Visualizer</h1>
+  <div class="controls">
+    <button id="loadPreds">Load Server Prediction</button>
+    <label for="exampleIndex">Example index:</label>
+    <input id="exampleIndex" type="number" value="0" min="0" style="width:60px" />
+    <button id="loadExample">Load Example (from uploaded .npy)</button>
+  </div>
+
+  <div id="status">Status: idle</div>
+  <div id="canvasHolder"></div>
+
+  <script>
+  // Render a 2D grid to a canvas. grid is a 2D array of numbers.
+  function renderGridToCanvas(grid, scale=10) {
+    const rows = grid.length;
+    const cols = grid[0].length;
+    const canvas = document.createElement('canvas');
+    canvas.width = cols * scale;
+    canvas.height = rows * scale;
+    canvas.className = 'grid-canvas';
+    const ctx = canvas.getContext('2d');
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const v = grid[r][c];
+        ctx.fillStyle = valueToColor(v);
+        ctx.fillRect(c*scale, r*scale, scale, scale);
+      }
+    }
+    return canvas;
+  }
+
+  function valueToColor(v) {
+    // conventions: 0 open/empty -> white, 1 wall -> black,
+    // 2 start -> red, 3 goal -> green, others -> gray
+    if (v === 1) return '#000000';
+    if (v === 2) return '#FF0000';
+    if (v === 3) return '#00FF00';
+    return '#FFFFFF';
+  }
+
+  async function loadServerPrediction() {
+    document.getElementById('status').textContent = 'Status: fetching prediction...';
+    try {
+      const idx = parseInt(document.getElementById('exampleIndex').value || '0');
+      const resp = await fetch('/predict');
+      if (!resp.ok) throw new Error('Server returned ' + resp.status);
+      const data = await resp.json();
+      const solved = data.solved_maze || data.pred || data.preds || null;
+      let grid = null;
+      if (Array.isArray(solved)) {
+        grid = solved;
+      } else if (data.preds) {
+        // preds may be a flattened array or nested; try to pick index
+        try {
+          const p = data.preds[idx];
+          grid = Array.isArray(p) ? p : null;
+        } catch (e) { grid = null; }
+      }
+
+      if (!grid) {
+        document.getElementById('status').textContent = 'Status: prediction returned no usable grid';
+        return;
+      }
+
+      // If grid is a flat 1D array -> try to reshape into square
+      if (!Array.isArray(grid[0])) {
+        const flat = grid;
+        const L = flat.length;
+        const side = Math.round(Math.sqrt(L));
+        const newGrid = [];
+        for (let r = 0; r < side; r++) {
+          newGrid.push(flat.slice(r*side, (r+1)*side));
+        }
+        grid = newGrid;
+      }
+
+      const holder = document.getElementById('canvasHolder');
+      holder.innerHTML = '';
+      holder.appendChild(renderGridToCanvas(grid, 12));
+      document.getElementById('status').textContent = 'Status: rendered prediction';
+    } catch (err) {
+      document.getElementById('status').textContent = 'Status: error - ' + err.message;
+      console.error(err);
+    }
+  }
+
+  document.getElementById('loadPreds').addEventListener('click', loadServerPrediction);
+
+  // For future: support loading local examples (not required now). Hook placeholder.
+  document.getElementById('loadExample').addEventListener('click', ()=>{
+    alert('Local example load not implemented in this minimal maze visualizer. Use "Load Server Prediction" for now.');
+  });
+
+  </script>
+</body>
+</html>

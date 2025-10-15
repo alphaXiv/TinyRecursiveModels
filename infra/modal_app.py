@@ -110,7 +110,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     local_out = os.path.join(repo_dir, out_dir)
     os.makedirs(local_out, exist_ok=True)
     
-    shutil.move('scripts/run_eval_only.py', './')
+    # shutil.move('scripts/run_eval_only.py', './')
     # Build command to run evaluation single-process (no torchrun distributed)
     cmd = [
         sys.executable, "run_eval_only.py",
@@ -278,16 +278,58 @@ def predict(grid: object = None):
     return {"solved_maze": solved_maze, "source_file": preds_path}
 
 
+# @app.function(volumes={"/data": volume})
+# @modal.fastapi_endpoint(docs=True)
+# def get_visualizer():
+#     """Serve the maze visualizer HTML."""
+#     # Serve the external `puzzle_visualizer.html` from the repo in the persistent volume
+#     repo_dir = "/data/repo"
+#     os.chdir(repo_dir)
+#     html_path = os.path.join(repo_dir, "puzzle_visualizer.html")
+
+#     subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=False)
+#     if not os.path.exists(html_path):
+#         raise FileNotFoundError(f"Visualizer HTML not found at {html_path}; ensure repo is cloned and file exists")
+
+#     with open(html_path, 'r', encoding='utf-8') as f:
+#         content = f.read()
+
+#     # Attempt to inline npyjs if the HTML references it so the client
+#     # doesn't need to fetch /assets/npyjs.js separately (which may 404
+#     # due to routing differences). This ensures the visualizer gets the
+#     # library directly from the repository file.
+#     try:
+#         # Look for common script tags that reference the asset
+#         if 'npyjs.js' in content:
+#             asset_file = os.path.join(repo_dir, 'assets', 'npyjs.js')
+#             if os.path.exists(asset_file):
+#                 with open(asset_file, 'r', encoding='utf-8') as af:
+#                     npyjs_src = af.read()
+
+#                 # Replace any <script src="...npyjs.js"></script> with inline code
+#                 # Match both /get_asset?filename=npyjs.js and assets/npyjs.js occurrences
+#                 content = content.replace('<script src="/get_asset?filename=npyjs.js"></script>', f'<script>\n{npyjs_src}\n</script>')
+#                 content = content.replace('<script src="assets/npyjs.js"></script>', f'<script>\n{npyjs_src}\n</script>')
+#                 content = content.replace("<script src='assets/npyjs.js'></script>", f"<script>\n{npyjs_src}\n</script>")
+#                 print(f"Inlined npyjs from {asset_file} into visualizer HTML")
+#             else:
+#                 print(f"npyjs asset not found at {asset_file}; leaving HTML unchanged")
+#     except Exception as e:
+#         print(f"Failed to inline npyjs.js into visualizer HTML: {e}")
+
+#     return Response(content, media_type="text/html")
+
+
 @app.function(volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def get_visualizer():
-    """Serve the maze visualizer HTML."""
-    # Serve the external `puzzle_visualizer.html` from the repo in the persistent volume
+def get_maze_visualizer():
+    """Serve the simple maze-only visualizer HTML."""
     repo_dir = "/data/repo"
-    html_path = os.path.join(repo_dir, "puzzle_visualizer.html")
+    os.chdir(repo_dir)
+    html_path = os.path.join(repo_dir, "maze_visualizer.html")
 
     if not os.path.exists(html_path):
-        raise FileNotFoundError(f"Visualizer HTML not found at {html_path}; ensure repo is cloned and file exists")
+        raise FileNotFoundError(f"Maze visualizer HTML not found at {html_path}; ensure repo is cloned")
 
     with open(html_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -295,7 +337,7 @@ def get_visualizer():
     return Response(content, media_type="text/html")
 
 
-@modal.fastapi_endpoint()
+@modal.fastapi_endpoint(docs=True)
 def get_asset(filename: str):
     """Serve asset files from the repo."""
     
@@ -307,10 +349,24 @@ def get_asset(filename: str):
         print(f"Cloning repo from {repo_url}...")
         subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
     
-    try:
-        asset_path = os.path.join(repo_dir, "assets", filename)
+    asset_path = os.path.join(repo_dir, "assets", filename)
+    
+    
+    if os.path.exists(asset_path):
         with open(asset_path, "rb") as f:
             content = f.read()
         return Response(content, media_type="application/javascript" if filename.endswith(".js") else "text/plain")
-    except FileNotFoundError:
-        return modal.asgi.Response("File not found", status_code=404)
+    # Add a helpful log message for debugging missing assets
+    print(f"get_asset: asset not found at {asset_path}")
+    return Response("File not found", status_code=404, media_type="text/plain")
+
+
+@modal.fastapi_endpoint(docs=True)
+def assets(filename: str):
+    """Compatibility wrapper: serve files at /assets/{filename} by delegating to get_asset.
+
+    Some HTML in the repo requests /assets/npyjs.js directly. This wrapper ensures
+    that path resolves to the same file-serving logic without changing other code.
+    """
+    # Delegate to get_asset which clones the repo if needed and reads the file
+    return get_asset(filename)
