@@ -84,23 +84,34 @@
       }
       const data = await resp.json();
 
-      // Strict: must contain 'solved_maze' as a 2D array.
+      // Strict: must contain 'solved_maze' as a 2D square array.
       if (!data || !('solved_maze' in data)) {
         throw new Error("Response JSON missing required 'solved_maze' field");
       }
 
       let grid = data.solved_maze;
 
-      // If grid is a flat 1D array -> try to reshape into square
+      // Normalize predicted grid to 2D and validate square
+      if (!Array.isArray(grid) || grid.length === 0) {
+        throw new Error('Predicted grid is empty or invalid');
+      }
       if (!Array.isArray(grid[0])) {
         const flat = grid;
         const L = flat.length;
-        const side = Math.round(Math.sqrt(L));
+        const side = Math.sqrt(L);
+        if (!Number.isInteger(side)) {
+          throw new Error(`Predicted grid length ${L} is not a perfect square`);
+        }
         const newGrid = [];
         for (let r = 0; r < side; r++) {
           newGrid.push(flat.slice(r*side, (r+1)*side));
         }
         grid = newGrid;
+      }
+      const hPred = grid.length;
+      const wPred = Array.isArray(grid[0]) ? grid[0].length : 0;
+      if (hPred !== wPred) {
+        throw new Error(`Predicted grid is not square: ${hPred}x${wPred}`);
       }
 
       const holder = document.getElementById('canvasHolder');
@@ -120,28 +131,42 @@
       const left = document.createElement('div');
       const right = document.createElement('div');
 
-      const hIn = document.createElement('div');
-      hIn.textContent = 'Input grid';
-      hIn.style.fontWeight = 'bold';
-      hIn.style.marginBottom = '4px';
-      left.appendChild(hIn);
+  const headerIn = document.createElement('div');
+  headerIn.textContent = 'Input grid';
+  headerIn.style.fontWeight = 'bold';
+  headerIn.style.marginBottom = '4px';
+  left.appendChild(headerIn);
       const inputGrid = data.input_maze;
-      if (Array.isArray(inputGrid) && inputGrid.length > 0) {
-        const inSide = inputGrid.length;
-        const inScale = Math.max(4, Math.floor(maxPixels / inSide));
-        left.appendChild(renderGridToCanvas(inputGrid, inScale));
-      } else {
-        const msg = document.createElement('div');
-        msg.textContent = 'Input grid unavailable';
-        msg.style.color = '#888';
-        left.appendChild(msg);
+      if (!Array.isArray(inputGrid) || inputGrid.length === 0) {
+        throw new Error('Input grid unavailable in server response');
       }
+      if (!Array.isArray(inputGrid[0])) {
+        const flat = inputGrid;
+        const L = flat.length;
+        const side = Math.sqrt(L);
+        if (!Number.isInteger(side)) {
+          throw new Error(`Input grid length ${L} is not a perfect square`);
+        }
+        const newGrid = [];
+        for (let r = 0; r < side; r++) {
+          newGrid.push(flat.slice(r*side, (r+1)*side));
+        }
+        inputGrid.length = 0; // replace contents
+        for (const row of newGrid) inputGrid.push(row);
+      }
+      const hIn = inputGrid.length;
+      const wIn = Array.isArray(inputGrid[0]) ? inputGrid[0].length : 0;
+      if (hIn !== wIn) {
+        throw new Error(`Input grid is not square: ${hIn}x${wIn}`);
+      }
+      const inScale = Math.max(4, Math.floor(maxPixels / hIn));
+      left.appendChild(renderGridToCanvas(inputGrid, inScale));
 
-      const hOut = document.createElement('div');
-      hOut.textContent = 'Predicted grid';
-      hOut.style.fontWeight = 'bold';
-      hOut.style.marginBottom = '4px';
-      right.appendChild(hOut);
+  const headerOut = document.createElement('div');
+  headerOut.textContent = 'Predicted grid';
+  headerOut.style.fontWeight = 'bold';
+  headerOut.style.marginBottom = '4px';
+  right.appendChild(headerOut);
       right.appendChild(renderGridToCanvas(grid, scale));
 
       wrap.appendChild(left);

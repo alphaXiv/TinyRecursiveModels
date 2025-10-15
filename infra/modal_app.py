@@ -255,10 +255,12 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
     import torch
     data = torch.load(preds_path, map_location='cpu')
 
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail=f"Loaded predictions file {preds_path} is not a dict of tensors")
     if 'preds' not in data:
         raise HTTPException(status_code=400, detail=f"Loaded predictions file {preds_path} does not contain key 'preds'")
 
-    preds = data['preds']  # Expect shape (N, seq_len, ...)
+    preds = data['preds']  # Expect shape (N, seq_len[, num_classes]) or (N, H, W)
 
     # If caller provided an explicit grid (GET query or POST body), try to use it.
     provided_grid = None
@@ -282,95 +284,93 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
         try:
             total = len(preds)
         except Exception:
-            raise HTTPException(status_code=400, detail="Preds is not indexable")
+            raise HTTPException(status_code=400, detail="'preds' tensor is not indexable")
         idx = 0 if index is None else int(index)
         if idx < 0 or idx >= total:
             raise HTTPException(status_code=400, detail=f"Index {idx} out of range (0..{total-1})")
         sel = preds[idx]
         ret_index = idx
+        # Reduce to 2D int grid if possible; handle logits with argmax on last dim.
         try:
-            grid_arr = sel.argmax(axis=-1).cpu().numpy() if getattr(sel, 'ndim', 0) > 1 else sel.cpu().numpy()
+            if getattr(sel, 'ndim', 0) >= 2 and sel.shape[-1] > 8:  # heuristic: last dim likely num_classes
+                arr = sel.argmax(dim=-1)
+            else:
+                arr = sel
+            grid_arr = arr.detach().cpu().numpy() if hasattr(arr, 'detach') else np.array(arr)
         except Exception:
             grid_arr = np.array(sel)
 
-    # Infer grid size
+    # Normalize predicted grid to square 2D array strictly
     import math
-    L = grid_arr.shape[-1] if getattr(grid_arr, 'ndim', 0) > 0 else len(grid_arr)
-    side = int(math.sqrt(L))
-    if side * side != L:
-        # If not a perfect square, attempt 30x30 as default
-        side = 30
-        L = side * side
-        grid_arr = grid_arr.flat[:L]
-
-    solved_maze = np.asarray(grid_arr).reshape((side, side)).tolist()
+    if getattr(grid_arr, 'ndim', 0) == 2:
+        h, w = int(grid_arr.shape[0]), int(grid_arr.shape[1])
+        if h != w:
+            raise HTTPException(status_code=400, detail=f"Predicted grid is not square: {h}x{w}")
+        solved_maze = np.asarray(grid_arr).tolist()
+        side = h
+    else:
+        L = grid_arr.shape[-1] if getattr(grid_arr, 'ndim', 0) > 0 else len(grid_arr)
+        side_f = math.sqrt(L)
+        if not float(side_f).is_integer():
+            raise HTTPException(status_code=400, detail=f"Predicted grid length {L} is not a perfect square")
+        side = int(side_f)
+        solved_maze = np.asarray(grid_arr).reshape((side, side)).tolist()
 
     # Prepare input_maze: if user provided a grid, echo it; otherwise load corresponding inputs shard
     input_maze = None
     if provided_grid is not None:
-        # Use reshape logic for the provided input (handle 2D directly)
+        # Validate provided input grid strictly
         in_arr = np.array(provided_grid)
         if getattr(in_arr, 'ndim', 0) == 2:
+            h, w = int(in_arr.shape[0]), int(in_arr.shape[1])
+            if h != w:
+                raise HTTPException(status_code=400, detail=f"Provided input grid is not square: {h}x{w}")
             input_maze = in_arr.tolist()
         else:
             L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else len(in_arr)
-            side_in = int(math.sqrt(L_in))
-            if side_in * side_in != L_in:
-                side_in = side  # fall back to output side if not a perfect square
-                L_in = side_in * side_in
-                in_arr = in_arr.flat[:L_in]
+            side_f = math.sqrt(L_in)
+            if not float(side_f).is_integer():
+                raise HTTPException(status_code=400, detail=f"Provided input grid length {L_in} is not a perfect square")
+            side_in = int(side_f)
             input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
     else:
-        # Load matching inputs file by replacing suffix
-        try:
-            inputs_path = preds_path.replace("_all_preds.", "_all_inputs.")
-            import torch
-            in_data = torch.load(inputs_path, map_location='cpu')
-            # Try multiple likely keys; fall back to first tensor-like entry
-            inputs_tensor = None
-            if isinstance(in_data, dict):
-                for k in ("inputs", "all_inputs", "all__inputs", "input", "x", "xs", "grids"):
-                    if k in in_data:
-                        inputs_tensor = in_data[k]
-                        break
-                if inputs_tensor is None:
-                    # Prefer entry matching length of preds if possible
-                    try:
-                        for k, v in in_data.items():
-            # Prepare input_maze strictly: if user provided a grid, validate/reshape; otherwise load corresponding inputs shard and enforce key/shape
-                                inputs_tensor = v
-                                break
-                    except Exception:
-                        pass
-                if inputs_tensor is None:
-                    for v in in_data.values():
-                        if hasattr(v, 'shape'):
-                            inputs_tensor = v
-                            break
-                if inputs_tensor is None:
-                    raise KeyError("Could not locate inputs tensor in inputs shard")
-            else:
-                inputs_tensor = in_data
+        # Load inputs directly from the same saved dict (evaluate saved 'inputs' alongside 'preds')
+        inputs_tensor = None
+        for k in ("inputs", "all_inputs", "all__inputs", "input", "x", "xs", "grids"):
+            if k in data:
+                inputs_tensor = data[k]
+                break
+        if inputs_tensor is None:
+            raise HTTPException(status_code=400, detail=(
+                f"Inputs not found in {os.path.basename(preds_path)}. "
+                "Re-run evaluation with eval_save_outputs including 'inputs'."
+            ))
 
-            # Use same index ret_index (guaranteed set in this branch)
+        if ret_index is None:
+            raise HTTPException(status_code=500, detail="ret_index not set while selecting input grid")
+
+        try:
             sel_in = inputs_tensor[ret_index]
-            try:
-                in_arr = sel_in.cpu().numpy()
-            except Exception:
-                in_arr = np.array(sel_in)
-            # If already a HxW grid, use as-is; otherwise reshape to square
-            if getattr(in_arr, 'ndim', 0) == 2:
-                input_maze = np.asarray(in_arr).tolist()
-            else:
-                L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else (in_arr.size if hasattr(in_arr, 'size') else len(in_arr))
-                side_in = int(math.sqrt(L_in))
-                if side_in * side_in != L_in:
-                    side_in = side
-                    L_in = side_in * side_in
-                    in_arr = np.asarray(in_arr).reshape(-1)[:L_in]
-                input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
         except Exception:
-            input_maze = None
+            raise HTTPException(status_code=400, detail="Failed to index into saved inputs tensor")
+
+        try:
+            in_arr = sel_in.detach().cpu().numpy() if hasattr(sel_in, 'detach') else np.array(sel_in)
+        except Exception:
+            in_arr = np.array(sel_in)
+
+        if getattr(in_arr, 'ndim', 0) == 2:
+            h, w = int(in_arr.shape[0]), int(in_arr.shape[1])
+            if h != w:
+                raise HTTPException(status_code=400, detail=f"Saved input grid is not square: {h}x{w}")
+            input_maze = np.asarray(in_arr).tolist()
+        else:
+            L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else (in_arr.size if hasattr(in_arr, 'size') else len(in_arr))
+            side_f = math.sqrt(L_in)
+            if not float(side_f).is_integer():
+                raise HTTPException(status_code=400, detail=f"Saved input grid length {L_in} is not a perfect square")
+            side_in = int(side_f)
+            input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
 
     return {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index}
 
