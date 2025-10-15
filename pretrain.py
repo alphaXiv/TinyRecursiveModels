@@ -28,7 +28,7 @@ except Exception:
     print("Couldn't load numpy. Pls check the required version and/or if it's installed correctly.")
 
 import torch
-from typing import Optional, Any, Sequence, List
+from typing import Optional, Any, Sequence, List, cast
 from dataclasses import dataclass
 import os
 import math
@@ -46,7 +46,14 @@ import coolname
 import hydra
 import pydantic
 from omegaconf import DictConfig
-from adam_atan2 import AdamATan2
+
+# Make adam_atan2 optional so evaluation-only runs don't crash when the
+# optimizer package isn't installed. If unavailable, AdamATan2 will be
+# set to None and optimizer construction should be skipped for eval.
+try:
+    from adam_atan2 import AdamATan2
+except Exception:
+    AdamATan2 = None
 
 from puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig, PuzzleDatasetMetadata
 from utils.functions import load_model_class, get_model_source_path
@@ -142,7 +149,7 @@ def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size:
     return dataloader, dataset.metadata
 
 
-def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, rank: int, world_size: int):
+def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, rank: int, world_size: int, is_eval: bool = False):
     model_cfg = dict(
         **config.arch.__pydantic_extra__,  # type: ignore
         batch_size=config.global_batch_size // world_size,
@@ -174,9 +181,23 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
                     dist.broadcast(param, src=0)
 
     # Optimizers and lr
-    if config.arch.puzzle_emb_ndim == 0:
+    # For evaluation-only usage we skip creating optimizers to avoid requiring
+    # optimizer packages that may not be installed in an eval environment.
+    if is_eval:
+        return model, [], []
+
+    # If AdamATan2 isn't available, fail early with a helpful message when
+    # an optimizer that requires it would be created. This avoids confusing
+    # "None is not callable" errors later and gives a clear remediation.
+    need_adam = not config.freeze_weights and getattr(config.arch, "puzzle_emb_ndim", None) != 0
+    if need_adam and AdamATan2 is None:
+        raise RuntimeError(
+            "adam_atan2 package is required for training optimizers but was not found. "
+            "Install it (pip install <package>) or run in evaluation mode by passing is_eval=True."
+        )
+    if getattr(config.arch, 'puzzle_emb_ndim', 0) == 0:
         optimizers = [
-            AdamATan2(
+            cast(Any, AdamATan2)(
                 model.parameters(),
                 lr=0,  # Needs to be set by scheduler
                 weight_decay=config.weight_decay,
@@ -206,7 +227,7 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size
             ),
-            AdamATan2(
+            cast(Any, AdamATan2)(
                 model.parameters(),
                 lr=0,  # Needs to be set by scheduler
                 weight_decay=config.weight_decay,
@@ -243,12 +264,12 @@ def cosine_schedule_with_warmup_lr_lambda(
     return base_lr * (min_ratio + max(0.0, (1 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress))))
 
 
-def init_train_state(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, rank: int, world_size: int):
+def init_train_state(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, rank: int, world_size: int, is_eval: bool = False):
     # Estimated total training steps
     total_steps = int(config.epochs * train_metadata.total_groups * train_metadata.mean_puzzle_examples / config.global_batch_size)
 
     # Model
-    model, optimizers, optimizer_lrs = create_model(config, train_metadata, rank=rank, world_size=world_size)
+    model, optimizers, optimizer_lrs = create_model(config, train_metadata, rank=rank, world_size=world_size, is_eval=is_eval)
 
     return TrainState(
         step=0,
