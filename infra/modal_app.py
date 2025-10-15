@@ -14,6 +14,7 @@ import subprocess
 import sys
 from huggingface_hub import hf_hub_download
 import modal
+from fastapi import Response
 import shutil
 
 # Create a persistent volume for repo and data
@@ -122,7 +123,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     print(f"Running evaluation command: {' '.join(cmd)}")
     # Run and raise on failure
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
-    return {"status": "Evaluation completed", "output_dir": local_out}
+    return {"status": "Evaluation completed", "output_dir": local_out, "result": result}
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
@@ -200,10 +201,17 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     return {'message': 'Evaluation completed', 'output_dir': out_dir}
 
 
-@app.function()
-@modal.fastapi_endpoint(method="POST")
-def predict(grid: list):
-    """Predict solved maze from input grid."""
+@app.function(image = IMAGE, volumes= {"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def predict(grid: object = None):
+    """Predict solved maze from input grid.
+
+    Accepts either:
+    - POST with a JSON body containing a list (the grid), or
+    - GET with a `grid` query parameter containing JSON (stringified list).
+    If no grid is provided, the function will load saved predictions from the
+    evaluation outputs and return the first example.
+    """
     # As requested: use test-set predictions from evaluation outputs on the persistent volume.
     repo_dir = "/data/repo"
     out_dir = os.path.join(repo_dir, "out")
@@ -231,30 +239,46 @@ def predict(grid: list):
 
     preds = data['preds']  # Expect shape (N, seq_len, ...)
 
-    # For now take the first example and reshape to square grid using seq_len from dataset metadata (30x30 -> 900)
-    first = preds[0]
-    # If preds are logits or ids, attempt to convert to ints
-    try:
-        grid_flat = first.argmax(axis=-1).numpy() if first.ndim > 1 else first.numpy()
-    except Exception:
-        grid_flat = first.numpy()
+    # If caller provided an explicit grid (GET query or POST body), try to use it.
+    provided_grid = None
+    if grid is not None:
+        # grid may be a JSON string (from query) or a Python list (from body)
+        import json
+        try:
+            if isinstance(grid, str):
+                provided_grid = json.loads(grid)
+            else:
+                provided_grid = grid  # assume list-like
+        except Exception:
+            return {"error": "Failed to parse provided grid; send JSON list in POST body or JSON string in 'grid' query param."}
+
+    import numpy as np
+    if provided_grid is not None:
+        grid_arr = np.array(provided_grid)
+    else:
+        # For now take the first example from saved preds
+        first = preds[0]
+        try:
+            grid_arr = first.argmax(axis=-1).cpu().numpy() if getattr(first, 'ndim', 0) > 1 else first.cpu().numpy()
+        except Exception:
+            grid_arr = first.cpu().numpy()
 
     # Infer grid size
     import math
-    L = grid_flat.shape[-1] if grid_flat.ndim > 0 else len(grid_flat)
+    L = grid_arr.shape[-1] if getattr(grid_arr, 'ndim', 0) > 0 else len(grid_arr)
     side = int(math.sqrt(L))
     if side * side != L:
         # If not a perfect square, attempt 30x30 as default
         side = 30
         L = side * side
-        grid_flat = grid_flat[:L]
+        grid_arr = grid_arr.flat[:L]
 
-    solved_maze = grid_flat.reshape((side, side)).tolist()
+    solved_maze = np.asarray(grid_arr).reshape((side, side)).tolist()
 
     return {"solved_maze": solved_maze, "source_file": preds_path}
 
 
-@app.function()
+@app.function(volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def get_visualizer():
     """Serve the maze visualizer HTML."""
@@ -268,10 +292,9 @@ def get_visualizer():
     with open(html_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    return modal.asgi.Response(content, media_type="text/html")
+    return Response(content, media_type="text/html")
 
 
-@app.function(volumes={"/data": volume})
 @modal.fastapi_endpoint()
 def get_asset(filename: str):
     """Serve asset files from the repo."""
@@ -288,6 +311,6 @@ def get_asset(filename: str):
         asset_path = os.path.join(repo_dir, "assets", filename)
         with open(asset_path, "rb") as f:
             content = f.read()
-        return modal.asgi.Response(content, media_type="application/javascript" if filename.endswith(".js") else "text/plain")
+        return Response(content, media_type="application/javascript" if filename.endswith(".js") else "text/plain")
     except FileNotFoundError:
         return modal.asgi.Response("File not found", status_code=404)
