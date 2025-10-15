@@ -218,8 +218,15 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None):
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
+    # Choose arch override for MLP vs attention by temporarily swapping arch file
+    config_path = os.path.join(repo_dir, "config", "cfg_pretrain.yaml")
+    arch_dir = os.path.join(repo_dir, "config", "arch")
+    trm_path = os.path.join(arch_dir, "trm.yaml")
+    backup_path = os.path.join(arch_dir, "trm.yaml.bak")
+
     cmd = [
-        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
+        "--config", config_path,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -227,8 +234,34 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None):
         "--eval-only",
         "--bf16",
     ]
-    print("Running Sudoku eval:", " ".join(cmd))
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+
+    need_mlp = (model or "mlp").lower() == "mlp"
+    restored = False
+    try:
+        if need_mlp:
+            # Backup original trm.yaml and set mlp_t: True inline
+            if os.path.exists(trm_path):
+                shutil.copy2(trm_path, backup_path)
+            # Parse YAML and set mlp_t True
+            import yaml as _yaml
+            with open(trm_path, "r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f)
+            # Set flag
+            data["mlp_t"] = True
+            # Write back
+            with open(trm_path, "w", encoding="utf-8") as f:
+                _yaml.safe_dump(data, f, sort_keys=False)
+        print("Running Sudoku eval:", " ".join(cmd))
+        result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        # Restore original arch file if we swapped it
+        if need_mlp and os.path.exists(backup_path):
+            try:
+                shutil.copy2(backup_path, trm_path)
+                os.remove(backup_path)
+                restored = True
+            except Exception as _e:
+                print("WARNING: Failed to restore original arch file:", _e)
     _symlink_latest(parent, out_dir)
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
@@ -252,7 +285,7 @@ def _do_run_eval_maze():
     os.makedirs(out_dir, exist_ok=True)
 
     cmd = [
-        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -320,7 +353,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     
     # Build command to run evaluation with torchrun on both GPUs
     cmd = [
-        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -392,7 +425,7 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     # subprocess.run(["ls", "data", "maze-30x30-hard-1k"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # Run evaluation using subprocess with torchrun for multi-GPU
     cmd = [
-        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -676,7 +709,7 @@ def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None):
     os.makedirs(out_dir, exist_ok=True)
 
     cmd = [
-        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
