@@ -150,7 +150,7 @@ def download_weights():
     return {"status": "Weights downloaded", "path": checkpoint_path}
 
 
-@app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
+# @app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
 def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out"):
     """Run evaluation locally on mounted repo data.

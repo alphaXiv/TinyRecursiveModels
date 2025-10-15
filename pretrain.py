@@ -298,19 +298,33 @@ def load_checkpoint(model: nn.Module, config: PretrainConfig):
         # Load state dict
         state_dict = torch.load(config.load_checkpoint, map_location="cuda")
 
-        # Preprocess keys: strip known wrappers like '_orig_mod.' or '_orig._mod.'
+        # Preprocess keys: ensure model-saving wrapper prefix exists so older
+        # training checkpoints that stored params under "_orig_mod.model.*"
+        # are present. Instead of removing, add the expected prefix when it
+        # is missing (but don't overwrite already-present prefixed keys).
         def preprocess_state_dict_keys(sd: dict) -> dict:
             new_sd = {}
             for k, v in sd.items():
-                new_k = k
-                # common noise variants
-                for pat in ('_orig_mod.', '_orig._mod.', '_orig_mod.model.', '_orig._mod.model.'):
-                    if pat in new_k:
-                        new_k = new_k.replace(pat, '')
-                # Some checkpoints use a leading '.' incorrectly, normalize it
-                if new_k.startswith('.'):
-                    new_k = new_k[1:]
-                new_sd[new_k] = v
+                # Normalize accidental leading dot
+                key = k[1:] if k.startswith('.') else k
+
+                # If key already contains one of the known wrapper variants,
+                # keep it as-is.
+                if any(pat in key for pat in ('_orig_mod.', '_orig._mod.', '_orig_mod.model.', '_orig._mod.model.')):
+                    new_sd[key] = v
+                    continue
+
+                # Build the prefixed form the model expects
+                prefixed = f"_orig_mod.{key}"
+
+                # If a prefixed key already exists in the original sd, prefer it
+                # (avoid clobber). Otherwise add the prefixed key.
+                if prefixed in sd:
+                    # prefixed version is already in original state dict; skip adding duplicate
+                    new_sd[prefixed] = sd[prefixed]
+                else:
+                    new_sd[prefixed] = v
+
             return new_sd
 
         state_dict = preprocess_state_dict_keys(state_dict)
