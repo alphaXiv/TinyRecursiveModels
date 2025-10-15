@@ -20,6 +20,7 @@ import copy
 import torch
 import torch.distributed as dist
 import numpy as np
+from typing import Any, Dict, Mapping, cast
 # Reuse functions and classes from pretrain.py
 from pretrain import (
     create_dataloader,
@@ -43,6 +44,7 @@ def parse_args():
     p.add_argument('--repeats', type=int, default=1, help='Number of times to run evaluation (will save outputs per run)')
     p.add_argument('--seed-start', type=int, default=0, help='Offset added to seed for each repeat (seed + seed-start + rep)')
     p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
+    p.add_argument('--bf16', action='store_true', help='Use CUDA autocast with bfloat16 during evaluation for faster inference on A100')
     return p.parse_args()
 
 
@@ -77,7 +79,10 @@ def main():
             hydra_cfg = compose(config_name=config_name)
 
         # Convert to plain dict (resolve interpolations)
-        cfg = OmegaConf.to_container(hydra_cfg, resolve=True)
+        cfg_any = OmegaConf.to_container(hydra_cfg, resolve=True)
+        if not isinstance(cfg_any, dict):
+            raise RuntimeError('Composed config is not a mapping after OmegaConf.to_container')
+        cfg: Dict[str, Any] = dict(cast(Mapping[str, Any], cfg_any))
 
         # Apply CLI overrides on top of the composed config
         cfg['data_paths_test'] = [args.dataset]
@@ -110,6 +115,12 @@ def main():
 
     # Seed RNGs
     torch.random.manual_seed(config.seed + RANK)
+    # Allow cuDNN to pick fastest algorithms (can speed up eval)
+    try:
+        import torch.backends.cudnn as cudnn
+        cudnn.benchmark = True
+    except Exception:
+        pass
 
     # Create dataloaders
     # train_loader, train_metadata = create_dataloader(config, 'train', rank=RANK, world_size=WORLD_SIZE, test_set_mode=False, epochs_per_iter=1, global_batch_size=config.global_batch_size)
@@ -194,22 +205,34 @@ def main():
         ts = copy.deepcopy(train_state_eval)
         ts.model.eval()
 
-        metrics = evaluate(
-            config=config,
-            train_state=ts,
-            eval_loader=eval_loader,
-            eval_metadata=eval_metadata,
-            evaluators=evaluators,
-            rank=RANK,
-            world_size=WORLD_SIZE,
-            cpu_group=CPU_GROUP,
-        )
+        # Evaluate with no grad; optionally enable bf16 autocast when requested and CUDA is available
+        metrics = None
+        use_cuda = torch.cuda.is_available()
+        if args.bf16 and use_cuda:
+            from contextlib import nullcontext
+            amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+        else:
+            from contextlib import nullcontext
+            amp_ctx = nullcontext()
+
+        with torch.inference_mode(), amp_ctx:
+            metrics = evaluate(
+                config=config,
+                train_state=ts,
+                eval_loader=eval_loader,
+                eval_metadata=eval_metadata,
+                evaluators=evaluators,
+                rank=RANK,
+                world_size=WORLD_SIZE,
+                cpu_group=CPU_GROUP,
+            )
 
         if RANK == 0 and metrics is not None:
             print(f'Run {rep+1} metrics:')
             print(metrics)
             # Accumulate metrics for final summary
-            for set_name, m in metrics.items():
+            m_dict = cast(dict, metrics)
+            for set_name, m in m_dict.items():
                 metric_acc.setdefault(set_name, {})
                 for key in ('accuracy', 'exact_accuracy'):
                     if key in m:

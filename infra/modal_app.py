@@ -111,15 +111,15 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     local_out = os.path.join(repo_dir, out_dir)
     os.makedirs(local_out, exist_ok=True)
     
-    # shutil.move('scripts/run_eval_only.py', './')
-    # Build command to run evaluation single-process (no torchrun distributed)
+    # Build command to run evaluation with torchrun on both GPUs
     cmd = [
-        sys.executable, "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only"
+        "--eval-only",
+        "--bf16",
     ]
     print(f"Running evaluation command: {' '.join(cmd)}")
     # Run and raise on failure
@@ -190,7 +190,8 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only"
+        "--eval-only",
+        "--bf16",
     ]
     print(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -307,34 +308,47 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
     # Prepare input_maze: if user provided a grid, echo it; otherwise load corresponding inputs shard
     input_maze = None
     if provided_grid is not None:
-        # Use same square reshape logic for the provided input
+        # Use reshape logic for the provided input (handle 2D directly)
         in_arr = np.array(provided_grid)
-        L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else len(in_arr)
-        side_in = int(math.sqrt(L_in))
-        if side_in * side_in != L_in:
-            side_in = side  # fall back to output side if not a perfect square
-            L_in = side_in * side_in
-            in_arr = in_arr.flat[:L_in]
-        input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
+        if getattr(in_arr, 'ndim', 0) == 2:
+            input_maze = in_arr.tolist()
+        else:
+            L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else len(in_arr)
+            side_in = int(math.sqrt(L_in))
+            if side_in * side_in != L_in:
+                side_in = side  # fall back to output side if not a perfect square
+                L_in = side_in * side_in
+                in_arr = in_arr.flat[:L_in]
+            input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
     else:
         # Load matching inputs file by replacing suffix
         try:
             inputs_path = preds_path.replace("_all_preds.", "_all_inputs.")
             import torch
             in_data = torch.load(inputs_path, map_location='cpu')
-            # Common key name is 'inputs'
+            # Try multiple likely keys; fall back to first tensor-like entry
+            inputs_tensor = None
             if isinstance(in_data, dict):
-                if 'inputs' in in_data:
-                    inputs_tensor = in_data['inputs']
-                else:
-                    # Try a best-effort: take the first tensor-like value
-                    inputs_tensor = None
+                for k in ("inputs", "all_inputs", "all__inputs", "input", "x", "xs", "grids"):
+                    if k in in_data:
+                        inputs_tensor = in_data[k]
+                        break
+                if inputs_tensor is None:
+                    # Prefer entry matching length of preds if possible
+                    try:
+                        for k, v in in_data.items():
+            # Prepare input_maze strictly: if user provided a grid, validate/reshape; otherwise load corresponding inputs shard and enforce key/shape
+                                inputs_tensor = v
+                                break
+                    except Exception:
+                        pass
+                if inputs_tensor is None:
                     for v in in_data.values():
                         if hasattr(v, 'shape'):
                             inputs_tensor = v
                             break
-                    if inputs_tensor is None:
-                        raise KeyError("No 'inputs' key in inputs shard")
+                if inputs_tensor is None:
+                    raise KeyError("Could not locate inputs tensor in inputs shard")
             else:
                 inputs_tensor = in_data
 
@@ -344,13 +358,17 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
                 in_arr = sel_in.cpu().numpy()
             except Exception:
                 in_arr = np.array(sel_in)
-            L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 1 else (in_arr.size if hasattr(in_arr, 'size') else len(in_arr))
-            side_in = int(math.sqrt(L_in))
-            if side_in * side_in != L_in:
-                side_in = side
-                L_in = side_in * side_in
-                in_arr = np.asarray(in_arr).reshape(-1)[:L_in]
-            input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
+            # If already a HxW grid, use as-is; otherwise reshape to square
+            if getattr(in_arr, 'ndim', 0) == 2:
+                input_maze = np.asarray(in_arr).tolist()
+            else:
+                L_in = in_arr.shape[-1] if getattr(in_arr, 'ndim', 0) > 0 else (in_arr.size if hasattr(in_arr, 'size') else len(in_arr))
+                side_in = int(math.sqrt(L_in))
+                if side_in * side_in != L_in:
+                    side_in = side
+                    L_in = side_in * side_in
+                    in_arr = np.asarray(in_arr).reshape(-1)[:L_in]
+                input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
         except Exception:
             input_maze = None
 
