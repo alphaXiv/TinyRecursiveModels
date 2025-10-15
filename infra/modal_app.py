@@ -73,9 +73,9 @@ def prepare_dataset():
     
     if os.path.exists(repo_dir):
         shutil.rmtree(repo_dir)
-        
-    print(f"Cloning repo from {repo_url}...")
-    subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
     
     # Change to repo directory
     os.chdir(repo_dir)
@@ -88,6 +88,42 @@ def prepare_dataset():
     print(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     return {"status": "Dataset prepared successfully"}
+
+
+@app.function(image=IMAGE, timeout=3600, gpu="A100:2",volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out"):
+    """Run evaluation on the mounted test dataset and save predictions to persistent volume.
+
+    This will raise on any failure (no fallback behavior) as requested.
+    """
+    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    repo_dir = "/data/repo"
+
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+
+    os.chdir(repo_dir)
+
+    local_out = os.path.join(repo_dir, out_dir)
+    os.makedirs(local_out, exist_ok=True)
+    
+    shutil.move('scripts/run_eval_only.py', './')
+    # Build command to run evaluation single-process (no torchrun distributed)
+    cmd = [
+        sys.executable, "run_eval_only.py",
+        "--checkpoint", os.path.join(repo_dir, checkpoint_path),
+        "--dataset", os.path.join(repo_dir, dataset_path),
+        "--outdir", local_out,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only"
+    ]
+    print(f"Running evaluation command: {' '.join(cmd)}")
+    # Run and raise on failure
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    return {"status": "Evaluation completed", "output_dir": local_out}
+
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def download_weights():
@@ -144,14 +180,15 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     os.makedirs(local_out, exist_ok=True)
     # shutil.move("scripts/run_eval_only.py", "./")
     # subprocess.run(["mv", "scripts/run_eval_only.py", "../"], stdout=sys.stdout, stderr=sys.stderr, check=True)
-    subprocess.run(["ls", "data", "maze-30x30-hard-1k"], stdout=sys.stdout, stderr=sys.stderr, check=True)
+    # subprocess.run(["ls", "data", "maze-30x30-hard-1k"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # Run evaluation using subprocess with torchrun for multi-GPU
     cmd = [
         "torchrun", "--nproc_per_node=2", "run_eval_only.py",
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
-        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds"
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only"
     ]
     print(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -167,96 +204,71 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
 @modal.fastapi_endpoint(method="POST")
 def predict(grid: list):
     """Predict solved maze from input grid."""
-    # For now, return a mock solved maze
-    # In the future, this will load the actual model and run inference
-    solved_maze = [
-        [1, 4, 1],
-        [4, 2, 4],
-        [1, 4, 3]
-    ]
-    return {"solved_maze": solved_maze}
+    # As requested: use test-set predictions from evaluation outputs on the persistent volume.
+    repo_dir = "/data/repo"
+    out_dir = os.path.join(repo_dir, "out")
+
+    if not os.path.exists(repo_dir):
+        raise RuntimeError(f"Repo not found at {repo_dir}; expected it to be cloned into the persistent volume")
+
+    # Expect evaluation to have saved preds into out_dir
+    preds_path = None
+    # Look for files that contain 'all_preds' or 'preds' inside out_dir
+    for fname in os.listdir(out_dir):
+        if fname.endswith('.0') or 'all_preds' in fname or 'preds' in fname:
+            preds_path = os.path.join(out_dir, fname)
+            break
+
+    if preds_path is None:
+        raise RuntimeError(f"No prediction file found in {out_dir}; run eval_test first")
+
+    # Load predictions saved by evaluate (torch.save of a dict of tensors)
+    import torch
+    data = torch.load(preds_path, map_location='cpu')
+
+    if 'preds' not in data:
+        raise RuntimeError(f"Loaded predictions file {preds_path} does not contain key 'preds'")
+
+    preds = data['preds']  # Expect shape (N, seq_len, ...)
+
+    # For now take the first example and reshape to square grid using seq_len from dataset metadata (30x30 -> 900)
+    first = preds[0]
+    # If preds are logits or ids, attempt to convert to ints
+    try:
+        grid_flat = first.argmax(axis=-1).numpy() if first.ndim > 1 else first.numpy()
+    except Exception:
+        grid_flat = first.numpy()
+
+    # Infer grid size
+    import math
+    L = grid_flat.shape[-1] if grid_flat.ndim > 0 else len(grid_flat)
+    side = int(math.sqrt(L))
+    if side * side != L:
+        # If not a perfect square, attempt 30x30 as default
+        side = 30
+        L = side * side
+        grid_flat = grid_flat[:L]
+
+    solved_maze = grid_flat.reshape((side, side)).tolist()
+
+    return {"solved_maze": solved_maze, "source_file": preds_path}
 
 
 @app.function()
 @modal.fastapi_endpoint(docs=True)
 def get_visualizer():
     """Serve the maze visualizer HTML."""
-    html_content = """
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8" />
-  <title>Maze Solver - Tiny Recursive Models</title>
-  <style>
-    body { font-family: sans-serif; margin: 16px; }
-    .selector-area { margin-bottom: 1rem; }
-    .grid-canvas { margin: 4px; border: 1px solid #ccc; }
-    .example-container { display: inline-block; margin: 0 16px 16px 0; vertical-align: top; }
-    .puzzle-display { margin-top: 1rem; }
-    .puzzle-id { font-weight: bold; margin-bottom: 0.5rem; }
-    #groupList, #puzzleList { margin: 1rem 0; }
-    .group-item, .puzzle-item { cursor: pointer; margin: 4px 8px 4px 0; padding: 2px 6px; border: 1px solid #aaa; display: inline-block; }
-    .group-item:hover, .puzzle-item:hover { background: #eef; }
-  </style>
-</head>
-<body>
-<h1>Maze Solver - Tiny Recursive Models</h1>
+    # Serve the external `puzzle_visualizer.html` from the repo in the persistent volume
+    repo_dir = "/data/repo"
+    html_path = os.path.join(repo_dir, "puzzle_visualizer.html")
 
-<div class="selector-area">
-  <p>This is a demo interface for the Maze-Hard solver.</p>
-  <p>Load maze data and click "Predict Solved Maze" to get AI-generated solutions.</p>
-</div>
+    if not os.path.exists(html_path):
+        raise FileNotFoundError(f"Visualizer HTML not found at {html_path}; ensure repo is cloned and file exists")
 
-<div>
-  <div id="groupList"></div>
-  <div id="puzzleList"></div>
-  <div class="puzzle-display" id="puzzleView"></div>
-  <button id="predictBtn" style="margin-top: 1rem; padding: 10px 20px; font-size: 16px;">Predict Solved Maze</button>
-  <div id="predictionResult" style="margin-top: 1rem;"></div>
-</div>
+    with open(html_path, 'r', encoding='utf-8') as f:
+        content = f.read()
 
-<script>
-document.getElementById('predictBtn').addEventListener('click', async () => {
-  const resultDiv = document.getElementById('predictionResult');
-  resultDiv.innerHTML = 'Getting prediction from AI...';
-
-  try {
-    const response = await fetch('/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ grid: [[1,4,1],[4,2,4],[1,4,1]] })
-    });
-    const data = await response.json();
-    const solved = data.solved_maze;
-    resultDiv.innerHTML = '<h3>AI-Solved Maze:</h3>' + renderGrid(solved);
-  } catch (error) {
-    resultDiv.innerHTML = 'Error: ' + error.message;
-  }
-});
-
-function renderGrid(grid) {
-  let html = '<div style="display: inline-block; border: 1px solid #000;">';
-  for (let row of grid) {
-    html += '<div style="display: flex;">';
-    for (let cell of row) {
-      let color;
-      if (cell === 1) color = "#000000"; // wall
-      else if (cell === 2) color = "#FF0000"; // start
-      else if (cell === 3) color = "#00FF00"; // goal
-      else if (cell === 4) color = "#FFFFFF"; // open
-      else color = "#FFFFFF";
-      html += `<div style="width: 20px; height: 20px; background-color: ${color}; border: 1px solid #ccc;"></div>`;
-    }
-    html += '</div>';
-  }
-  html += '</div>';
-  return html;
-}
-</script>
-</body>
-</html>
-"""
-    return modal.asgi.Response(html_content, media_type="text/html")
+    return modal.asgi.Response(content, media_type="text/html")
 
 
 @app.function(volumes={"/data": volume})

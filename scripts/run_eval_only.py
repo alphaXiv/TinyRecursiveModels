@@ -42,6 +42,7 @@ def parse_args():
     p.add_argument('--ema-shadow', default=None, help='Path to EMA shadow state dict (optional). If provided, it will be loaded into EMAHelper before applying EMA.')
     p.add_argument('--repeats', type=int, default=1, help='Number of times to run evaluation (will save outputs per run)')
     p.add_argument('--seed-start', type=int, default=0, help='Offset added to seed for each repeat (seed + seed-start + rep)')
+    p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
     return p.parse_args()
 
 
@@ -127,8 +128,9 @@ def main():
             print('No evaluator found')
         evaluators = []
 
-    # Init model & train_state (loads checkpoint on rank 0 inside create_model)
-    train_state = init_train_state(config, eval_metadata, rank=RANK, world_size=WORLD_SIZE)
+    # Init model & train_state (loads checkpoint on rank 0 inside create_model).
+    # Pass is_eval according to CLI flag to skip optimizer construction in evaluation-only runs.
+    train_state = init_train_state(config, eval_metadata, rank=RANK, world_size=WORLD_SIZE, is_eval=bool(args.eval_only))
 
     # Optionally switch to EMA copy if requested by CLI or config
     train_state_eval = train_state
