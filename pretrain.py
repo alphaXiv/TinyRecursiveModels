@@ -298,6 +298,23 @@ def load_checkpoint(model: nn.Module, config: PretrainConfig):
         # Load state dict
         state_dict = torch.load(config.load_checkpoint, map_location="cuda")
 
+        # Preprocess keys: strip known wrappers like '_orig_mod.' or '_orig._mod.'
+        def preprocess_state_dict_keys(sd: dict) -> dict:
+            new_sd = {}
+            for k, v in sd.items():
+                new_k = k
+                # common noise variants
+                for pat in ('_orig_mod.', '_orig._mod.', '_orig_mod.model.', '_orig._mod.model.'):
+                    if pat in new_k:
+                        new_k = new_k.replace(pat, '')
+                # Some checkpoints use a leading '.' incorrectly, normalize it
+                if new_k.startswith('.'):
+                    new_k = new_k[1:]
+                new_sd[new_k] = v
+            return new_sd
+
+        state_dict = preprocess_state_dict_keys(state_dict)
+
         # Resize and reset puzzle emb if needed
         puzzle_emb_name = "_orig_mod.model.inner.puzzle_emb.weights"
         expected_shape: torch.Size = model.model.puzzle_emb.weights.shape  # type: ignore
