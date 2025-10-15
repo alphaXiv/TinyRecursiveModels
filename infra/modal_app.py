@@ -62,6 +62,23 @@ IMAGE = (
 APP_NAME = "tinyrecursive-eval"
 app = modal.App(name=APP_NAME, image=IMAGE)
 
+# CORS: allow visualizer and predict to call across Modal subdomains
+from fastapi.middleware.cors import CORSMiddleware
+fastapi_app = None
+try:
+    # Create a small FastAPI app only to attach middleware; Modal will mount endpoints into its own FastAPI instance.
+    from fastapi import FastAPI
+    fastapi_app = FastAPI()
+    fastapi_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Optionally restrict to specific Modal domains
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+except Exception:
+    pass
+
 
 # Helpers
 def _safe_name(s: str) -> str:
@@ -70,9 +87,26 @@ def _safe_name(s: str) -> str:
 
 def _ensure_repo(repo_dir: str = "/data/repo") -> str:
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    
+    # if os.path.exists(repo_dir):
+        # shutil.rmtree(repo_dir)
+    
     if not os.path.exists(repo_dir):
         print(f"Cloning repo from {repo_url}...")
         subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    # Ensure run_eval_only.py is at repo root (idempotent). If not, copy from scripts/ if present.
+    try:
+        src = os.path.join(repo_dir, "scripts", "run_eval_only.py")
+        dst = os.path.join(repo_dir, "run_eval_only.py")
+        if not os.path.exists(dst) and os.path.exists(src):
+            try:
+                os.replace(src, dst)
+                print(f"Moved eval runner to repo root: {dst}")
+            except Exception:
+                shutil.copy2(src, dst)
+                print(f"Copied eval runner to repo root: {dst}")
+    except Exception as e:
+        print("WARNING: Failed to place run_eval_only.py at repo root:", e)
     return repo_dir
 
 
@@ -118,6 +152,23 @@ def _pick_latest_run(base_dir: str) -> str | None:
     return subdirs[0]
 
 
+def _get_eval_script_path(repo_dir: str) -> str:
+    """Return absolute path to run_eval_only.py. Prefer repo root, else scripts/.
+    Logs existence for debugging.
+    """
+    candidates = [
+        os.path.join(repo_dir, "run_eval_only.py"),
+        os.path.join(repo_dir, "scripts", "run_eval_only.py"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            print(f"Resolved eval script: {p} (exists=True)")
+            return p
+    print(f"Resolved eval script: not found in candidates {candidates}")
+    # Return the preferred location even if missing to surface a clearer error downstream
+    return candidates[0]
+
+
 # Internal helpers that perform the actual work. These can be called from both
 # webhook endpoints and job/CLI functions without chaining Modal function calls.
 def _do_prepare_dataset(include_maze: bool,
@@ -130,7 +181,7 @@ def _do_prepare_dataset(include_maze: bool,
 
     # Install requirements (idempotent)
     subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
-
+    
     if include_maze:
         cmd = ["python", "dataset/build_maze_dataset.py"]
         print("Running:", " ".join(cmd))
@@ -150,9 +201,7 @@ def _do_prepare_dataset(include_maze: bool,
 
 
 def _do_download_sudoku_weights(model: str):
-    repo_dir = "/data/repo"
-    if not os.path.exists(repo_dir):
-        subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
+    repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
     model = (model or "mlp").lower()
@@ -191,9 +240,7 @@ def _do_download_all_weights():
 
 
 def _do_run_eval_sudoku(model: str, dataset_path: str | None):
-    repo_dir = "/data/repo"
-    if not os.path.exists(repo_dir):
-        subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
+    repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
     # Ensure weights exist
@@ -224,8 +271,9 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None):
     trm_path = os.path.join(arch_dir, "trm.yaml")
     backup_path = os.path.join(arch_dir, "trm.yaml.bak")
 
+    eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", eval_script,
         "--config", config_path,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
@@ -233,6 +281,7 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None):
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
+        "--subset-examples", "64",
     ]
 
     need_mlp = (model or "mlp").lower() == "mlp"
@@ -277,6 +326,7 @@ def _do_run_eval_maze():
     if not os.path.isdir(dataset_dir):
         print("WARNING: Maze dataset folder not found at", dataset_dir)
 
+    # subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     parent = os.path.join(repo_dir, "out", "maze", "default")
     os.makedirs(parent, exist_ok=True)
     import time
@@ -284,14 +334,16 @@ def _do_run_eval_maze():
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
+    eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", eval_script,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
+        "--subset-examples", "64",
     ]
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -339,12 +391,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
 
     This will raise on any failure (no fallback behavior) as requested.
     """
-    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/data/repo"
-
-    if not os.path.exists(repo_dir):
-        print(f"Cloning repo from {repo_url}...")
-        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    repo_dir = _ensure_repo()
 
     os.chdir(repo_dir)
 
@@ -352,14 +399,16 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     os.makedirs(local_out, exist_ok=True)
     
     # Build command to run evaluation with torchrun on both GPUs
+    eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", eval_script,
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
+        "--subset-examples", "64",
     ]
     print(f"Running evaluation command: {' '.join(cmd)}")
     # Run and raise on failure
@@ -424,14 +473,16 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     # subprocess.run(["mv", "scripts/run_eval_only.py", "../"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # subprocess.run(["ls", "data", "maze-30x30-hard-1k"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # Run evaluation using subprocess with torchrun for multi-GPU
+    eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", eval_script,
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
+        "--subset-examples", "64",
     ]
     print(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -708,19 +759,8 @@ def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None):
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    cmd = [
-        "torchrun", "--nproc_per_node=2", "scripts/run_eval_only.py",
-        "--checkpoint", ckpt_path,
-        "--dataset", dataset_dir,
-        "--outdir", out_dir,
-        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only",
-        "--bf16",
-    ]
-    print("Running Sudoku eval:", " ".join(cmd))
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
-    _symlink_latest(parent, out_dir)
-    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+    # Delegate to internal helper that handles MLP arch override and subset flags
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -773,15 +813,17 @@ def run_eval_maze_job():
     run_id = time.strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
-
+    # subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=False)
+    eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "torchrun", "--nproc_per_node=2", eval_script,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
+        "--subset-examples", "64",
     ]
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -921,11 +963,7 @@ def get_unified_visualizer():
 
 def _serve_asset_from_repo(filename: str) -> Response:
     """Internal helper to serve asset files from the repo."""
-    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/data/repo"
-    if not os.path.exists(repo_dir):
-        print(f"Cloning repo from {repo_url}...")
-        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    repo_dir = _ensure_repo()
     asset_path = os.path.join(repo_dir, "assets", filename)
     if os.path.exists(asset_path):
         with open(asset_path, "rb") as f:
