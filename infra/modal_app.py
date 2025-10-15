@@ -63,6 +63,61 @@ APP_NAME = "tinyrecursive-eval"
 app = modal.App(name=APP_NAME, image=IMAGE)
 
 
+# Helpers
+def _safe_name(s: str) -> str:
+    return ''.join(ch for ch in s if ch.isalnum() or ch in ('-', '_')).lower()
+
+
+def _ensure_repo(repo_dir: str = "/data/repo") -> str:
+    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
+    if not os.path.exists(repo_dir):
+        print(f"Cloning repo from {repo_url}...")
+        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    return repo_dir
+
+
+def _symlink_latest(parent_dir: str, run_dir: str):
+    """Create or update a 'latest' symlink under parent_dir pointing to run_dir.
+    If symlink creation fails (FS limitations), write latest.txt with the run name.
+    """
+    latest_link = os.path.join(parent_dir, "latest")
+    run_name = os.path.basename(run_dir.rstrip(os.sep))
+    try:
+        if os.path.islink(latest_link) or os.path.exists(latest_link):
+            try:
+                os.remove(latest_link)
+            except Exception:
+                pass
+        os.symlink(run_name, latest_link)
+    except Exception:
+        # Fallback: write a file
+        try:
+            with open(os.path.join(parent_dir, "latest.txt"), "w") as f:
+                f.write(run_name)
+        except Exception as e:
+            print("Failed to record latest run:", e)
+
+
+def _pick_latest_run(base_dir: str) -> str | None:
+    """Return the absolute path of the latest run dir under base_dir.
+    Prefers 'latest' symlink, else newest by mtime. Returns None if none.
+    """
+    if not os.path.isdir(base_dir):
+        return None
+    latest_link = os.path.join(base_dir, "latest")
+    if os.path.islink(latest_link):
+        target = os.readlink(latest_link)
+        run_dir = os.path.join(base_dir, target)
+        if os.path.isdir(run_dir):
+            return run_dir
+    # else choose most recent subdir
+    subdirs = [os.path.join(base_dir, d) for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d)) and d != "latest"]
+    if not subdirs:
+        return None
+    subdirs.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return subdirs[0]
+
+
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def prepare_dataset():
@@ -205,7 +260,7 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
 
 @app.function(image = IMAGE, volumes= {"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def predict(grid: object = None, index: int | None = None, file: str | None = None):
+def predict(grid: object = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
     """Predict solved maze from input grid.
 
     Accepts either:
@@ -216,7 +271,30 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
     """
     # As requested: use test-set predictions from evaluation outputs on the persistent volume.
     repo_dir = "/data/repo"
-    out_dir = os.path.join(repo_dir, "out")
+    # Choose output directory depending on optional task/model/run
+    base_out = os.path.join(repo_dir, "out")
+    safe_task = _safe_name(task or "maze")
+    if safe_task not in ("maze", "sudoku"):
+        raise HTTPException(status_code=400, detail="task must be 'maze' or 'sudoku'")
+    # Maze has a single model; enforce
+    if safe_task == "maze":
+        if model not in (None, "", "default"):
+            raise HTTPException(status_code=400, detail="maze has a single model; omit 'model' or use model=default")
+        safe_model = "default"
+    else:
+        safe_model = _safe_name(model or "mlp")
+        if safe_model not in ("mlp", "attn"):
+            raise HTTPException(status_code=400, detail="For sudoku, model must be 'mlp' or 'attn'")
+    task_dir = os.path.join(base_out, safe_task, safe_model)
+    # Resolve run directory
+    if run:
+        safe_run = _safe_name(run)
+        out_dir = os.path.join(task_dir, safe_run)
+    else:
+        guess = _pick_latest_run(task_dir)
+        if guess is None:
+            raise HTTPException(status_code=404, detail=f"No runs found in {task_dir}. Run evaluation first.")
+        out_dir = guess
 
     if not os.path.exists(repo_dir):
         raise RuntimeError(f"Repo not found at {repo_dir}; expected it to be cloned into the persistent volume")
@@ -372,7 +450,162 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
             side_in = int(side_f)
             input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
 
-    return {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index}
+    return {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index, "task": safe_task, "model": safe_model, "run_dir": out_dir}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def download_sudoku_weights(model: str = "mlp"):
+    """Download Sudoku checkpoints from Hugging Face. model: 'mlp' or 'attn'."""
+    repo_dir = "/data/repo"
+    if not os.path.exists(repo_dir):
+        subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
+    os.chdir(repo_dir)
+
+    model = (model or "mlp").lower()
+    if model not in ("mlp", "attn"):
+        raise HTTPException(status_code=400, detail="model must be 'mlp' or 'attn'")
+
+    from huggingface_hub import hf_hub_download
+    save_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights")
+    os.makedirs(save_dir, exist_ok=True)
+
+    if model == "mlp":
+        filename = "step_32550_sudoku_epoch50k"
+    else:
+        filename = "step_39060_sudoku_60k_epoch_attn_type"
+
+    ckpt_path = hf_hub_download(
+        repo_id="YuvrajSingh9886/sudoku-extreme-trm",
+        filename=filename,
+        local_dir=save_dir,
+    )
+    return {"status": "ok", "model": model, "checkpoint": ckpt_path}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def run_eval_sudoku(model: str = "mlp"):
+    """Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
+    repo_dir = "/data/repo"
+    if not os.path.exists(repo_dir):
+        subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
+    os.chdir(repo_dir)
+
+    # Ensure weights exist
+    resp = download_sudoku_weights.call(model=model)  # type: ignore
+    ckpt_path = resp["checkpoint"]
+
+    # Dataset path (assumes you've preprocessed or synced data/sudoku-extreme-full)
+    dataset_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full")
+    if not os.path.isdir(dataset_dir):
+        print("WARNING: Sudoku dataset folder not found at", dataset_dir)
+
+    # Output in per-run directory: out/sudoku/<model>/<run_id>
+    parent = os.path.join(repo_dir, "out", "sudoku", (model or "mlp").lower())
+    os.makedirs(parent, exist_ok=True)
+    import time
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(parent, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    cmd = [
+        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "--checkpoint", ckpt_path,
+        "--dataset", dataset_dir,
+        "--outdir", out_dir,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only",
+        "--bf16",
+    ]
+    print("Running Sudoku eval:", " ".join(cmd))
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    _symlink_latest(parent, out_dir)
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def download_all_weights():
+    """Download all required weights: maze default, sudoku mlp and attn."""
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+    results = {}
+    # Maze weights
+    maze_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights")
+    os.makedirs(maze_dir, exist_ok=True)
+    maze_ckpt = hf_hub_download(repo_id="YuvrajSingh9886/maze-hard-trm", filename="step_32550", local_dir=maze_dir)
+    results["maze"] = maze_ckpt
+    # Sudoku
+    results["sudoku_mlp"] = download_sudoku_weights.call(model="mlp")["checkpoint"]  # type: ignore
+    results["sudoku_attn"] = download_sudoku_weights.call(model="attn")["checkpoint"]  # type: ignore
+    return {"status": "ok", "paths": results}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def run_eval_maze():
+    """Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+
+    # Ensure weights
+    download_all_weights.call()
+    ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
+    dataset_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
+    if not os.path.isdir(dataset_dir):
+        print("WARNING: Maze dataset folder not found at", dataset_dir)
+
+    parent = os.path.join(repo_dir, "out", "maze", "default")
+    os.makedirs(parent, exist_ok=True)
+    import time
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(parent, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    cmd = [
+        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "--checkpoint", ckpt_path,
+        "--dataset", dataset_dir,
+        "--outdir", out_dir,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only",
+        "--bf16",
+    ]
+    print("Running Maze eval:", " ".join(cmd))
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    _symlink_latest(parent, out_dir)
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def list_runs(task: str = "maze", model: str | None = None):
+    """List available runs under out/<task>/<model>. For maze, model is always 'default'."""
+    repo_dir = _ensure_repo()
+    base_out = os.path.join(repo_dir, "out")
+    safe_task = _safe_name(task)
+    if safe_task not in ("maze", "sudoku"):
+        raise HTTPException(status_code=400, detail="task must be 'maze' or 'sudoku'")
+    if safe_task == "maze":
+        safe_model = "default"
+    else:
+        safe_model = _safe_name(model or "mlp")
+        if safe_model not in ("mlp", "attn"):
+            raise HTTPException(status_code=400, detail="For sudoku, model must be 'mlp' or 'attn'")
+    parent = os.path.join(base_out, safe_task, safe_model)
+    if not os.path.isdir(parent):
+        return {"runs": []}
+    entries = []
+    for d in os.listdir(parent):
+        p = os.path.join(parent, d)
+        if os.path.isdir(p) and d != "latest":
+            entries.append({"name": d, "mtime": os.path.getmtime(p)})
+    entries.sort(key=lambda e: e["mtime"], reverse=True)
+    latest = None
+    if os.path.islink(os.path.join(parent, "latest")):
+        latest = os.readlink(os.path.join(parent, "latest"))
+    return {"task": safe_task, "model": safe_model, "parent": parent, "latest": latest, "runs": entries}
 
 
 # @app.function(volumes={"/data": volume})
