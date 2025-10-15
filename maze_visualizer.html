@@ -19,6 +19,8 @@
     <input id="predictUrl" type="text" value="https://alphaxiv--tinyrecursive-eval-predict-dev.modal.run/" style="width:420px" />
     <label for="exampleIndex">Example index:</label>
     <input id="exampleIndex" type="number" value="0" min="0" style="width:60px" />
+    <label for="predFile">Preds file (optional):</label>
+    <input id="predFile" type="text" placeholder="step_32550_all_preds.0" style="width:220px" />
     <button id="loadExample">Load Example (from uploaded .npy)</button>
   </div>
 
@@ -65,11 +67,18 @@
   async function loadServerPrediction() {
     // No fallbacks: call the exact predict URL provided by the user and require a 'solved_maze' key.
     const PREDICT_URL = document.getElementById('predictUrl').value.trim();
-    document.getElementById('status').textContent = 'Status: fetching prediction from ' + PREDICT_URL + ' ...';
+    const idx = parseInt(document.getElementById('exampleIndex').value, 10);
+    const file = (document.getElementById('predFile')?.value || '').trim();
     try {
+      if (!Number.isInteger(idx) || idx < 0) throw new Error('Example index must be a non-negative integer');
       // Ensure the URL is absolute and non-empty
       if (!PREDICT_URL) throw new Error('Predict URL is empty');
-      const resp = await fetch(PREDICT_URL, { method: 'GET' });
+      const url = new URL(PREDICT_URL);
+      url.searchParams.set('index', String(idx));
+      if (file) url.searchParams.set('file', file);
+
+      document.getElementById('status').textContent = 'Status: fetching prediction from ' + url.toString() + ' ...';
+      const resp = await fetch(url.toString(), { method: 'GET' });
       if (!resp.ok) {
         throw new Error('Server returned HTTP ' + resp.status);
       }
@@ -103,7 +112,8 @@
       const scale = Math.max(4, Math.floor(maxPixels / side));
 
       holder.appendChild(renderGridToCanvas(grid, scale));
-      document.getElementById('status').textContent = 'Status: rendered prediction (source: ' + (data.source_file || 'unknown') + ')';
+      const retIdx = Number.isInteger(data.index) ? data.index : idx;
+      document.getElementById('status').textContent = 'Status: rendered prediction (index: ' + retIdx + ', source: ' + (data.source_file || 'unknown') + ')';
 
       renderLegend();
     } catch (err) {

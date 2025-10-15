@@ -14,7 +14,7 @@ import subprocess
 import sys
 from huggingface_hub import hf_hub_download
 import modal
-from fastapi import Response
+from fastapi import Response, HTTPException
 import shutil
 
 # Create a persistent volume for repo and data
@@ -204,7 +204,7 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
 
 @app.function(image = IMAGE, volumes= {"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def predict(grid: object = None):
+def predict(grid: object = None, index: int | None = None, file: str | None = None):
     """Predict solved maze from input grid.
 
     Accepts either:
@@ -220,23 +220,42 @@ def predict(grid: object = None):
     if not os.path.exists(repo_dir):
         raise RuntimeError(f"Repo not found at {repo_dir}; expected it to be cloned into the persistent volume")
 
-    # Expect evaluation to have saved preds into out_dir
-    preds_path = None
-    # Look for files that contain 'all_preds' or 'preds' inside out_dir
-    for fname in os.listdir(out_dir):
-        if fname.endswith('.0') or 'all_preds' in fname or 'preds' in fname:
-            preds_path = os.path.join(out_dir, fname)
-            break
+    # Determine which preds file to use (strict, no silent fallbacks)
+    if not os.path.isdir(out_dir):
+        raise HTTPException(status_code=404, detail=f"Output directory not found: {out_dir}")
 
-    if preds_path is None:
-        raise RuntimeError(f"No prediction file found in {out_dir}; run eval_test first")
+    preds_path = None
+    if file is not None:
+        # Strict: only allow files within out_dir
+        candidate = os.path.join(out_dir, file)
+        candidate = os.path.realpath(candidate)
+        if not candidate.startswith(os.path.realpath(out_dir) + os.sep):
+            raise HTTPException(status_code=400, detail="Invalid file path")
+        if not os.path.exists(candidate):
+            raise HTTPException(status_code=404, detail=f"Specified preds file not found: {file}")
+        preds_path = candidate
+    else:
+        # Choose deterministically: file with largest step number in name step_<N>_all_preds.*
+        import re
+        best = None
+        best_step = -1
+        for fname in os.listdir(out_dir):
+            m = re.match(r"step_(\d+)_all_preds\.[0-9]+$", fname)
+            if m:
+                step = int(m.group(1))
+                if step > best_step:
+                    best_step = step
+                    best = fname
+        if best is None:
+            raise HTTPException(status_code=404, detail=f"No preds file matching 'step_<N>_all_preds.<rank>' found in {out_dir}. Run eval.")
+        preds_path = os.path.join(out_dir, best)
 
     # Load predictions saved by evaluate (torch.save of a dict of tensors)
     import torch
     data = torch.load(preds_path, map_location='cpu')
 
     if 'preds' not in data:
-        raise RuntimeError(f"Loaded predictions file {preds_path} does not contain key 'preds'")
+        raise HTTPException(status_code=400, detail=f"Loaded predictions file {preds_path} does not contain key 'preds'")
 
     preds = data['preds']  # Expect shape (N, seq_len, ...)
 
@@ -254,15 +273,24 @@ def predict(grid: object = None):
             return {"error": "Failed to parse provided grid; send JSON list in POST body or JSON string in 'grid' query param."}
 
     import numpy as np
+    ret_index = None
     if provided_grid is not None:
         grid_arr = np.array(provided_grid)
     else:
-        # For now take the first example from saved preds
-        first = preds[0]
+        # Strict index selection
         try:
-            grid_arr = first.argmax(axis=-1).cpu().numpy() if getattr(first, 'ndim', 0) > 1 else first.cpu().numpy()
+            total = len(preds)
         except Exception:
-            grid_arr = first.cpu().numpy()
+            raise HTTPException(status_code=400, detail="Preds is not indexable")
+        idx = 0 if index is None else int(index)
+        if idx < 0 or idx >= total:
+            raise HTTPException(status_code=400, detail=f"Index {idx} out of range (0..{total-1})")
+        sel = preds[idx]
+        ret_index = idx
+        try:
+            grid_arr = sel.argmax(axis=-1).cpu().numpy() if getattr(sel, 'ndim', 0) > 1 else sel.cpu().numpy()
+        except Exception:
+            grid_arr = np.array(sel)
 
     # Infer grid size
     import math
@@ -276,7 +304,7 @@ def predict(grid: object = None):
 
     solved_maze = np.asarray(grid_arr).reshape((side, side)).tolist()
 
-    return {"solved_maze": solved_maze, "source_file": preds_path}
+    return {"solved_maze": solved_maze, "source_file": preds_path, "index": ret_index}
 
 
 # @app.function(volumes={"/data": volume})
@@ -338,28 +366,26 @@ def get_maze_visualizer():
     return Response(content, media_type="text/html")
 
 
-@modal.fastapi_endpoint(docs=True)
-def get_asset(filename: str):
-    """Serve asset files from the repo."""
-    
-    # Use persistent data directory
+def _serve_asset_from_repo(filename: str) -> Response:
+    """Internal helper to serve asset files from the repo."""
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
     repo_dir = "/data/repo"
-    
     if not os.path.exists(repo_dir):
         print(f"Cloning repo from {repo_url}...")
         subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
-    
     asset_path = os.path.join(repo_dir, "assets", filename)
-    
-    
     if os.path.exists(asset_path):
         with open(asset_path, "rb") as f:
             content = f.read()
         return Response(content, media_type="application/javascript" if filename.endswith(".js") else "text/plain")
-    # Add a helpful log message for debugging missing assets
     print(f"get_asset: asset not found at {asset_path}")
     return Response("File not found", status_code=404, media_type="text/plain")
+
+
+@modal.fastapi_endpoint(docs=True)
+def get_asset(filename: str):
+    """Serve asset files from the repo."""
+    return _serve_asset_from_repo(filename)
 
 
 @modal.fastapi_endpoint(docs=True)
@@ -369,5 +395,5 @@ def assets(filename: str):
     Some HTML in the repo requests /assets/npyjs.js directly. This wrapper ensures
     that path resolves to the same file-serving logic without changing other code.
     """
-    # Delegate to get_asset which clones the repo if needed and reads the file
-    return get_asset(filename)
+    # Delegate to internal helper to avoid calling the decorated endpoint directly
+    return _serve_asset_from_repo(filename)
