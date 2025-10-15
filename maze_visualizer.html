@@ -15,6 +15,8 @@
   <h1>Maze Predictions Visualizer</h1>
   <div class="controls">
     <button id="loadPreds">Load Server Prediction</button>
+    <label for="predictUrl"> Predict URL:</label>
+    <input id="predictUrl" type="text" value="https://alphaxiv--tinyrecursive-eval-predict-dev.modal.run/" style="width:420px" />
     <label for="exampleIndex">Example index:</label>
     <input id="exampleIndex" type="number" value="0" min="0" style="width:60px" />
     <button id="loadExample">Load Example (from uploaded .npy)</button>
@@ -45,37 +47,40 @@
   }
 
   function valueToColor(v) {
-    // conventions: 0 open/empty -> white, 1 wall -> black,
-    // 2 start -> red, 3 goal -> green, others -> gray
-    if (v === 1) return '#000000';
-    if (v === 2) return '#FF0000';
-    if (v === 3) return '#00FF00';
-    return '#FFFFFF';
+    // Generic palette for integer-labeled maze grids. The model outputs
+    // integer labels per cell; we map common values to intuitive colors.
+    // You can customize these if your dataset uses different encodings.
+    const palette = {
+      0: '#FFFFFF', // empty / pad
+      1: '#000000', // wall
+      2: '#EEEEEE', // open / floor
+      3: '#00AA00', // goal
+      4: '#FFFF00', // special marker (yellow)
+      5: '#1E90FF', // path / predicted fill (blue)
+      6: '#FF00FF', // extra
+    };
+    return palette.hasOwnProperty(v) ? palette[v] : '#CCCCCC';
   }
 
   async function loadServerPrediction() {
-    document.getElementById('status').textContent = 'Status: fetching prediction...';
+    // No fallbacks: call the exact predict URL provided by the user and require a 'solved_maze' key.
+    const PREDICT_URL = document.getElementById('predictUrl').value.trim();
+    document.getElementById('status').textContent = 'Status: fetching prediction from ' + PREDICT_URL + ' ...';
     try {
-      const idx = parseInt(document.getElementById('exampleIndex').value || '0');
-      const resp = await fetch('/predict');
-      if (!resp.ok) throw new Error('Server returned ' + resp.status);
+      // Ensure the URL is absolute and non-empty
+      if (!PREDICT_URL) throw new Error('Predict URL is empty');
+      const resp = await fetch(PREDICT_URL, { method: 'GET' });
+      if (!resp.ok) {
+        throw new Error('Server returned HTTP ' + resp.status);
+      }
       const data = await resp.json();
-      const solved = data.solved_maze || data.pred || data.preds || null;
-      let grid = null;
-      if (Array.isArray(solved)) {
-        grid = solved;
-      } else if (data.preds) {
-        // preds may be a flattened array or nested; try to pick index
-        try {
-          const p = data.preds[idx];
-          grid = Array.isArray(p) ? p : null;
-        } catch (e) { grid = null; }
+
+      // Strict: must contain 'solved_maze' as a 2D array.
+      if (!data || !('solved_maze' in data)) {
+        throw new Error("Response JSON missing required 'solved_maze' field");
       }
 
-      if (!grid) {
-        document.getElementById('status').textContent = 'Status: prediction returned no usable grid';
-        return;
-      }
+      let grid = data.solved_maze;
 
       // If grid is a flat 1D array -> try to reshape into square
       if (!Array.isArray(grid[0])) {
@@ -91,12 +96,43 @@
 
       const holder = document.getElementById('canvasHolder');
       holder.innerHTML = '';
-      holder.appendChild(renderGridToCanvas(grid, 12));
-      document.getElementById('status').textContent = 'Status: rendered prediction';
+
+      // Make the canvas scale adaptively so large grids still fit the view.
+      const side = grid.length;
+      const maxPixels = Math.min(window.innerWidth - 40, 900);
+      const scale = Math.max(4, Math.floor(maxPixels / side));
+
+      holder.appendChild(renderGridToCanvas(grid, scale));
+      document.getElementById('status').textContent = 'Status: rendered prediction (source: ' + (data.source_file || 'unknown') + ')';
+
+      renderLegend();
     } catch (err) {
+      // Per request: no fallbacks, surface the error to the user.
       document.getElementById('status').textContent = 'Status: error - ' + err.message;
       console.error(err);
     }
+  }
+
+  function renderLegend() {
+    const legendId = 'vizLegend';
+    let legend = document.getElementById(legendId);
+    if (!legend) {
+      legend = document.createElement('div');
+      legend.id = legendId;
+      legend.style.marginTop = '8px';
+      document.getElementById('canvasHolder').appendChild(legend);
+    }
+    const items = [
+      {k:1, label:'Wall'},
+      {k:2, label:'Open'},
+      {k:5, label:'Predicted / path'},
+      {k:3, label:'Goal'},
+      {k:4, label:'Marker'}
+    ];
+    legend.innerHTML = '<strong>Legend:</strong> ' + items.map(it => {
+      const color = valueToColor(it.k);
+      return `<span style="display:inline-block;margin-right:10px"><span style="display:inline-block;width:16px;height:16px;background:${color};border:1px solid #000;margin-right:6px"></span>${it.label}</span>`;
+    }).join('');
   }
 
   document.getElementById('loadPreds').addEventListener('click', loadServerPrediction);

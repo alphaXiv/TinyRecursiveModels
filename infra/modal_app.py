@@ -87,6 +87,7 @@ def prepare_dataset():
     # Run dataset preparation
     cmd = ["python", "dataset/build_maze_dataset.py"]
     print(f"Running: {' '.join(cmd)}")
+    shutil.move('scripts/run_eval_only.py', './')
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     return {"status": "Dataset prepared successfully"}
 

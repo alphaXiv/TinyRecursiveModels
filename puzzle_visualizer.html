@@ -73,6 +73,8 @@
   <div id="puzzleList"></div>
   <div class="puzzle-display" id="puzzleView"></div>
   <button id="predictBtn" style="margin-top: 1rem; padding: 10px 20px; font-size: 16px;">Predict Solved Maze</button>
+  <label for="predictUrlPV"> Predict URL:</label>
+  <input id="predictUrlPV" type="text" value="https://alphaxiv--tinyrecursive-eval-predict-dev.modal.run/" style="width:420px" />
   <div id="predictionResult" style="margin-top: 1rem;"></div>
 </div>
 
@@ -441,14 +443,16 @@ document.getElementById('predictBtn').addEventListener('click', async () => {
     ]
   };
 
-  try {
-    const response = await fetch('/predict', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(dummyInput)
-    });
+    try {
+      const PRED_URL = document.getElementById('predictUrlPV').value.trim();
+      if (!PRED_URL) throw new Error('Predict URL is empty');
+      const response = await fetch(PRED_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(dummyInput)
+      });
     const data = await response.json();
     const solved = data.solved_maze;
     resultDiv.innerHTML = '<h3>Solved Maze:</h3>' + renderGrid(solved);
