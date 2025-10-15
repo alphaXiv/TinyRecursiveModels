@@ -118,33 +118,185 @@ def _pick_latest_run(base_dir: str) -> str | None:
     return subdirs[0]
 
 
+# Internal helpers that perform the actual work. These can be called from both
+# webhook endpoints and job/CLI functions without chaining Modal function calls.
+def _do_prepare_dataset(include_maze: bool,
+                        include_sudoku: bool,
+                        sudoku_output_dir: str,
+                        sudoku_subsample_size: int,
+                        sudoku_num_aug: int):
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+
+    # Install requirements (idempotent)
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
+
+    if include_maze:
+        cmd = ["python", "dataset/build_maze_dataset.py"]
+        print("Running:", " ".join(cmd))
+        subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+
+    if include_sudoku:
+        cmd = [
+            "python", "dataset/build_sudoku_dataset.py",
+            "--output-dir", sudoku_output_dir,
+            "--subsample-size", str(sudoku_subsample_size),
+            "--num-aug", str(sudoku_num_aug),
+        ]
+        print("Running:", " ".join(cmd))
+        subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+
+    return {"status": "Datasets prepared", "maze": include_maze, "sudoku": include_sudoku, "sudoku_output_dir": sudoku_output_dir}
+
+
+def _do_download_sudoku_weights(model: str):
+    repo_dir = "/data/repo"
+    if not os.path.exists(repo_dir):
+        subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
+    os.chdir(repo_dir)
+
+    model = (model or "mlp").lower()
+    if model not in ("mlp", "attn"):
+        raise HTTPException(status_code=400, detail="model must be 'mlp' or 'attn'")
+
+    save_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights")
+    os.makedirs(save_dir, exist_ok=True)
+
+    if model == "mlp":
+        filename = "step_32550_sudoku_epoch50k"
+    else:
+        filename = "step_39060_sudoku_60k_epoch_attn_type"
+
+    ckpt_path = hf_hub_download(
+        repo_id="YuvrajSingh9886/sudoku-extreme-trm",
+        filename=filename,
+        local_dir=save_dir,
+    )
+    return {"status": "ok", "model": model, "checkpoint": ckpt_path}
+
+
+def _do_download_all_weights():
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+    results: dict[str, str] = {}
+    # Maze weights
+    maze_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights")
+    os.makedirs(maze_dir, exist_ok=True)
+    maze_ckpt = hf_hub_download(repo_id="YuvrajSingh9886/maze-hard-trm", filename="step_32550", local_dir=maze_dir)
+    results["maze"] = maze_ckpt
+    # Sudoku
+    results["sudoku_mlp"] = _do_download_sudoku_weights("mlp")["checkpoint"]  # type: ignore
+    results["sudoku_attn"] = _do_download_sudoku_weights("attn")["checkpoint"]  # type: ignore
+    return {"status": "ok", "paths": results}
+
+
+def _do_run_eval_sudoku(model: str, dataset_path: str | None):
+    repo_dir = "/data/repo"
+    if not os.path.exists(repo_dir):
+        subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
+    os.chdir(repo_dir)
+
+    # Ensure weights exist
+    resp = _do_download_sudoku_weights(model)
+    ckpt_path = resp["checkpoint"]
+
+    # Dataset path: prefer 1k-aug-1000 if present, else fallback to full, unless overridden
+    if dataset_path:
+        dataset_dir = dataset_path
+    else:
+        dataset_dir = os.path.join(repo_dir, "data", "sudoku-extreme-1k-aug-1000")
+        if not os.path.isdir(dataset_dir):
+            dataset_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full")
+    if not os.path.isdir(dataset_dir):
+        print("WARNING: Sudoku dataset folder not found at", dataset_dir)
+
+    # Output in per-run directory: out/sudoku/<model>/<run_id>
+    parent = os.path.join(repo_dir, "out", "sudoku", (model or "mlp").lower())
+    os.makedirs(parent, exist_ok=True)
+    import time
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(parent, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    cmd = [
+        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "--checkpoint", ckpt_path,
+        "--dataset", dataset_dir,
+        "--outdir", out_dir,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only",
+        "--bf16",
+    ]
+    print("Running Sudoku eval:", " ".join(cmd))
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    _symlink_latest(parent, out_dir)
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+
+
+def _do_run_eval_maze():
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+
+    # Ensure weights
+    _do_download_all_weights()
+    ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
+    dataset_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
+    if not os.path.isdir(dataset_dir):
+        print("WARNING: Maze dataset folder not found at", dataset_dir)
+
+    parent = os.path.join(repo_dir, "out", "maze", "default")
+    os.makedirs(parent, exist_ok=True)
+    import time
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(parent, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    cmd = [
+        "torchrun", "--nproc_per_node=2", "run_eval_only.py",
+        "--checkpoint", ckpt_path,
+        "--dataset", dataset_dir,
+        "--outdir", out_dir,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only",
+        "--bf16",
+    ]
+    print("Running Maze eval:", " ".join(cmd))
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    _symlink_latest(parent, out_dir)
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+def prepare_dataset_job(include_maze: bool = True,
+                        include_sudoku: bool = False,
+                        sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
+                        sudoku_subsample_size: int = 1000,
+                        sudoku_num_aug: int = 1000):
+    """Job: Prepare datasets on Modal (callable with .remote)."""
+    return _do_prepare_dataset(
+        include_maze=include_maze,
+        include_sudoku=include_sudoku,
+        sudoku_output_dir=sudoku_output_dir,
+        sudoku_subsample_size=sudoku_subsample_size,
+        sudoku_num_aug=sudoku_num_aug,
+    )
+
+
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def prepare_dataset():
-    """Prepare the maze dataset on Modal."""
-    
-    # Use persistent data directory
-    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/data/repo"
-    
-    if os.path.exists(repo_dir):
-        shutil.rmtree(repo_dir)
-    if not os.path.exists(repo_dir):
-        print(f"Cloning repo from {repo_url}...")
-        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
-    
-    # Change to repo directory
-    os.chdir(repo_dir)
-    
-    # Install requirements
-    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], check=True)
-    
-    # Run dataset preparation
-    cmd = ["python", "dataset/build_maze_dataset.py"]
-    print(f"Running: {' '.join(cmd)}")
-    shutil.move('scripts/run_eval_only.py', './')
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
-    return {"status": "Dataset prepared successfully"}
+def prepare_dataset(include_maze: bool = True,
+                    include_sudoku: bool = False,
+                    sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
+                    sudoku_subsample_size: int = 1000,
+                    sudoku_num_aug: int = 1000):
+    """Webhook: Prepare datasets via HTTP; delegates to job function."""
+    return _do_prepare_dataset(
+        include_maze=include_maze,
+        include_sudoku=include_sudoku,
+        sudoku_output_dir=sudoku_output_dir,
+        sudoku_subsample_size=sudoku_subsample_size,
+        sudoku_num_aug=sudoku_num_aug,
+    )
 
 
 @app.function(image=IMAGE, timeout=3600, gpu="A100:2",volumes={"/data": volume})
@@ -258,17 +410,8 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     return {'message': 'Evaluation completed', 'output_dir': out_dir}
 
 
-@app.function(image = IMAGE, volumes= {"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def predict(grid: object = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
-    """Predict solved maze from input grid.
-
-    Accepts either:
-    - POST with a JSON body containing a list (the grid), or
-    - GET with a `grid` query parameter containing JSON (stringified list).
-    If no grid is provided, the function will load saved predictions from the
-    evaluation outputs and return the first example.
-    """
+def _do_predict(grid: object | None = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
+    """Core predict logic shared by webhook and job/CLI."""
     # As requested: use test-set predictions from evaluation outputs on the persistent volume.
     repo_dir = "/data/repo"
     # Choose output directory depending on optional task/model/run
@@ -453,10 +596,22 @@ def predict(grid: object = None, index: int | None = None, file: str | None = No
     return {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index, "task": safe_task, "model": safe_model, "run_dir": out_dir}
 
 
-@app.function(image=IMAGE, volumes={"/data": volume})
+@app.function(image = IMAGE, volumes= {"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def download_sudoku_weights(model: str = "mlp"):
-    """Download Sudoku checkpoints from Hugging Face. model: 'mlp' or 'attn'."""
+def predict(grid: object = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
+    """Webhook: Predict solved grid from inputs or saved eval outputs."""
+    return _do_predict(grid=grid, index=index, file=file, task=task, model=model, run=run)
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+def predict_job(grid: object = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
+    """Job: Predict via remote function for use from CLI entrypoint."""
+    return _do_predict(grid=grid, index=index, file=file, task=task, model=model, run=run)
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+def download_sudoku_weights_job(model: str = "mlp"):
+    """Job: Download Sudoku checkpoints from Hugging Face. model: 'mlp' or 'attn'."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
         subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
@@ -485,19 +640,30 @@ def download_sudoku_weights(model: str = "mlp"):
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_sudoku(model: str = "mlp"):
-    """Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
+def download_sudoku_weights(model: str = "mlp"):
+    """Webhook: delegates to download_sudoku_weights_job."""
+    return _do_download_sudoku_weights(model=model)
+
+
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
+def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None):
+    """Job: Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
         subprocess.run(["git", "clone", "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git", repo_dir], check=True)
     os.chdir(repo_dir)
 
     # Ensure weights exist
-    resp = download_sudoku_weights.call(model=model)  # type: ignore
+    resp = _do_download_sudoku_weights(model)  # type: ignore
     ckpt_path = resp["checkpoint"]
 
-    # Dataset path (assumes you've preprocessed or synced data/sudoku-extreme-full)
-    dataset_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full")
+    # Dataset path: prefer 1k-aug-1000 if present, else fallback to full, unless overridden
+    if dataset_path:
+        dataset_dir = dataset_path
+    else:
+        dataset_dir = os.path.join(repo_dir, "data", "sudoku-extreme-1k-aug-1000")
+        if not os.path.isdir(dataset_dir):
+            dataset_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full")
     if not os.path.isdir(dataset_dir):
         print("WARNING: Sudoku dataset folder not found at", dataset_dir)
 
@@ -526,8 +692,14 @@ def run_eval_sudoku(model: str = "mlp"):
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def download_all_weights():
-    """Download all required weights: maze default, sudoku mlp and attn."""
+def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None):
+    """Webhook: delegates to run_eval_sudoku_job."""
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path)
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+def download_all_weights_job():
+    """Job: Download all required weights: maze default, sudoku mlp and attn."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     results = {}
@@ -537,20 +709,26 @@ def download_all_weights():
     maze_ckpt = hf_hub_download(repo_id="YuvrajSingh9886/maze-hard-trm", filename="step_32550", local_dir=maze_dir)
     results["maze"] = maze_ckpt
     # Sudoku
-    results["sudoku_mlp"] = download_sudoku_weights.call(model="mlp")["checkpoint"]  # type: ignore
-    results["sudoku_attn"] = download_sudoku_weights.call(model="attn")["checkpoint"]  # type: ignore
+    results["sudoku_mlp"] = _do_download_sudoku_weights("mlp")["checkpoint"]  # type: ignore
+    results["sudoku_attn"] = _do_download_sudoku_weights("attn")["checkpoint"]  # type: ignore
     return {"status": "ok", "paths": results}
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_maze():
-    """Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
+def download_all_weights():
+    """Webhook: delegates to download_all_weights_job."""
+    return _do_download_all_weights()
+
+
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
+def run_eval_maze_job():
+    """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
     # Ensure weights
-    download_all_weights.call()
+    _do_download_all_weights()
     ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
     dataset_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
     if not os.path.isdir(dataset_dir):
@@ -576,6 +754,13 @@ def run_eval_maze():
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     _symlink_latest(parent, out_dir)
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def run_eval_maze():
+    """Webhook: delegates to run_eval_maze_job."""
+    return _do_run_eval_maze()
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -667,6 +852,40 @@ def get_maze_visualizer():
     return Response(content, media_type="text/html")
 
 
+@app.function(volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def get_sudoku_visualizer():
+    """Serve the Sudoku visualizer HTML."""
+    repo_dir = "/data/repo"
+    os.chdir(repo_dir)
+    html_path = os.path.join(repo_dir, "sudoku_visualizer.html")
+
+    if not os.path.exists(html_path):
+        raise FileNotFoundError(f"Sudoku visualizer HTML not found at {html_path}; ensure repo is cloned")
+
+    with open(html_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    return Response(content, media_type="text/html")
+
+
+@app.function(volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def get_unified_visualizer():
+    """Serve the unified visualizer HTML (task/model/run switcher)."""
+    repo_dir = "/data/repo"
+    os.chdir(repo_dir)
+    html_path = os.path.join(repo_dir, "unified_visualizer.html")
+
+    if not os.path.exists(html_path):
+        raise FileNotFoundError(f"Unified visualizer HTML not found at {html_path}; ensure repo is cloned")
+
+    with open(html_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    return Response(content, media_type="text/html")
+
+
 def _serve_asset_from_repo(filename: str) -> Response:
     """Internal helper to serve asset files from the repo."""
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
@@ -698,3 +917,88 @@ def assets(filename: str):
     """
     # Delegate to internal helper to avoid calling the decorated endpoint directly
     return _serve_asset_from_repo(filename)
+
+
+# ------------------------------
+# Local entrypoints (for `modal run`)
+# ------------------------------
+
+@app.local_entrypoint()
+def cli_prepare_dataset(include_maze: bool = True,
+                        include_sudoku: bool = False,
+                        sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
+                        sudoku_subsample_size: int = 1000,
+                        sudoku_num_aug: int = 1000):
+    """Local entrypoint: run dataset preparation remotely.
+    Example:
+      modal run infra/modal_app.py::cli_prepare_dataset --include-sudoku=true
+    """
+    res = prepare_dataset_job.remote(
+        include_maze=include_maze,
+        include_sudoku=include_sudoku,
+        sudoku_output_dir=sudoku_output_dir,
+        sudoku_subsample_size=sudoku_subsample_size,
+        sudoku_num_aug=sudoku_num_aug,
+    )
+    print(res)
+
+
+@app.local_entrypoint()
+def cli_run_eval_maze():
+    """Local entrypoint: trigger Maze evaluation."""
+    res = run_eval_maze_job.remote()  # type: ignore
+    print(res)
+
+
+@app.local_entrypoint()
+def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None):
+    """Local entrypoint: trigger Sudoku evaluation.
+    Example:
+      modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
+    """
+    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path)  # type: ignore
+    print(res)
+
+
+@app.local_entrypoint()
+def cli_download_all_weights():
+    """Local entrypoint: download all weights remotely."""
+    res = download_all_weights_job.remote()  # type: ignore
+    print(res)
+
+
+@app.local_entrypoint()
+def cli_predict(task: str = "maze",
+                model: str | None = None,
+                run: str | None = None,
+                file: str | None = None,
+                index: int | None = None,
+                grid_json: str | None = None,
+                grid_file: str | None = None):
+    """Local entrypoint: call predict remotely with flags.
+    Examples:
+      # Maze latest run, first example
+      modal run infra/modal_app.py::cli_predict --task=maze --index=0
+
+      # Sudoku (MLP), latest run, 10th example
+      modal run infra/modal_app.py::cli_predict --task=sudoku --model=mlp --index=9
+
+      # Pin run and file
+      modal run infra/modal_app.py::cli_predict --task=maze --run=20251015-202010 --file=step_32550_all_preds.0 --index=0
+
+      # Provide grid via JSON string
+      modal run infra/modal_app.py::cli_predict --task=sudoku --model=attn --grid-json='[[0,1,2],[3,4,5],[6,7,8]]'
+
+      # Provide grid via JSON file path
+      modal run infra/modal_app.py::cli_predict --task=maze --grid-file=/path/to/grid.json
+    """
+    grid = None
+    import json as _json
+    if grid_json:
+        grid = _json.loads(grid_json)
+    elif grid_file:
+        with open(grid_file, "r", encoding="utf-8") as f:
+            grid = _json.load(f)
+
+    res = predict_job.remote(grid=grid, index=index, file=file, task=task, model=model, run=run)  # type: ignore
+    print(res)
