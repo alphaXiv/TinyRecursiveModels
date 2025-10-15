@@ -111,9 +111,44 @@
       const maxPixels = Math.min(window.innerWidth - 40, 900);
       const scale = Math.max(4, Math.floor(maxPixels / side));
 
-      holder.appendChild(renderGridToCanvas(grid, scale));
+      // Side-by-side layout
+      const wrap = document.createElement('div');
+      wrap.style.display = 'grid';
+      wrap.style.gridTemplateColumns = '1fr 1fr';
+      wrap.style.gap = '16px';
+
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+
+      const hIn = document.createElement('div');
+      hIn.textContent = 'Input grid';
+      hIn.style.fontWeight = 'bold';
+      hIn.style.marginBottom = '4px';
+      left.appendChild(hIn);
+      const inputGrid = data.input_maze;
+      if (Array.isArray(inputGrid) && inputGrid.length > 0) {
+        const inSide = inputGrid.length;
+        const inScale = Math.max(4, Math.floor(maxPixels / inSide));
+        left.appendChild(renderGridToCanvas(inputGrid, inScale));
+      } else {
+        const msg = document.createElement('div');
+        msg.textContent = 'Input grid unavailable';
+        msg.style.color = '#888';
+        left.appendChild(msg);
+      }
+
+      const hOut = document.createElement('div');
+      hOut.textContent = 'Predicted grid';
+      hOut.style.fontWeight = 'bold';
+      hOut.style.marginBottom = '4px';
+      right.appendChild(hOut);
+      right.appendChild(renderGridToCanvas(grid, scale));
+
+      wrap.appendChild(left);
+      wrap.appendChild(right);
+      holder.appendChild(wrap);
       const retIdx = Number.isInteger(data.index) ? data.index : idx;
-      document.getElementById('status').textContent = 'Status: rendered prediction (index: ' + retIdx + ', source: ' + (data.source_file || 'unknown') + ')';
+      document.getElementById('status').textContent = 'Status: rendered (index: ' + retIdx + ', source: ' + (data.source_file || 'unknown') + ')';
 
       renderLegend();
     } catch (err) {
