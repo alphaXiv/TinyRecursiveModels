@@ -26,6 +26,15 @@
     <label>Paste input grid JSON (2D or flat):</label>
     <textarea id="inputGridJson" rows="4" cols="60" placeholder="[[1,0,...], [0,1,...], ...]"></textarea>
     <button id="sendInput">Predict from pasted grid (POST)</button>
+
+    <div style="margin-top:10px"></div>
+    <label for="listUrl">List URL (optional):</label>
+    <input id="listUrl" type="text" placeholder="derive from Predict URL" style="width:360px" />
+    <label for="getUrl">Get URL (optional):</label>
+    <input id="getUrl" type="text" placeholder="derive from Predict URL" style="width:360px" />
+    <button id="refreshSaved">Refresh Saved List</button>
+    <select id="savedSelect" style="min-width:240px"></select>
+    <button id="loadSaved">Load Selected Saved</button>
   </div>
 
   <div id="status">Status: idle</div>
@@ -287,6 +296,94 @@
   }
 
   document.getElementById('sendInput').addEventListener('click', postInputGrid);
+
+  function deriveEndpoint(base, name) {
+    // Try to replace the function segment in the subdomain: --predict--> --name--
+    // Example: https://...--tinyrecursive-eval-predict....modal.run/
+    // becomes: https://...--tinyrecursive-eval-name....modal.run/
+    try {
+      if (!base) return '';
+      const url = new URL(base);
+      url.hostname = url.hostname.replace('--predict', `--${name}`);
+      return url.toString();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  async function refreshSavedList() {
+    const predictUrl = document.getElementById('predictUrl').value.trim();
+    let listUrl = document.getElementById('listUrl').value.trim();
+    if (!listUrl) listUrl = deriveEndpoint(predictUrl, 'list_custom');
+    if (!listUrl) { document.getElementById('status').textContent = 'Status: provide List URL or a valid Predict URL'; return; }
+    try {
+      const url = new URL(listUrl);
+      url.searchParams.set('task', 'maze');
+      document.getElementById('status').textContent = 'Status: fetching saved list …';
+      const resp = await fetch(url.toString(), { method: 'GET' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      const sel = document.getElementById('savedSelect');
+      sel.innerHTML = '';
+      (data.items || []).forEach(it => {
+        const opt = document.createElement('option');
+        const d = new Date((it.mtime || 0) * 1000);
+        opt.value = it.name;
+        opt.textContent = `${it.name} (${d.toLocaleString()})`;
+        sel.appendChild(opt);
+      });
+      document.getElementById('status').textContent = `Status: loaded ${ (data.items||[]).length } saved items`;
+    } catch (err) {
+      document.getElementById('status').textContent = 'Status: error - ' + err.message;
+      console.error(err);
+    }
+  }
+
+  async function loadSaved() {
+    const predictUrl = document.getElementById('predictUrl').value.trim();
+    let getUrl = document.getElementById('getUrl').value.trim();
+    if (!getUrl) getUrl = deriveEndpoint(predictUrl, 'get_custom');
+    const name = document.getElementById('savedSelect').value;
+    if (!getUrl || !name) { document.getElementById('status').textContent = 'Status: provide Get URL and select a saved item'; return; }
+    try {
+      const url = new URL(getUrl);
+      url.searchParams.set('task', 'maze');
+      url.searchParams.set('name', name);
+      document.getElementById('status').textContent = 'Status: fetching saved sample …';
+      const resp = await fetch(url.toString(), { method: 'GET' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      // Render I/O→O/P
+      const holder = document.getElementById('canvasHolder');
+      holder.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.style.display = 'grid';
+      wrap.style.gridTemplateColumns = '1fr 1fr 1fr';
+      wrap.style.gap = '16px';
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      const extra = document.createElement('div');
+      const maxPixels = Math.min(window.innerWidth - 40, 900);
+      let inp = data.input_maze; if (!Array.isArray(inp[0])) { const L=inp.length; const s=Math.sqrt(L); if (!Number.isInteger(s)) throw new Error('Input not square'); const g=[]; for(let r=0;r<s;r++) g.push(inp.slice(r*s,(r+1)*s)); inp=g; }
+      const inScale = Math.max(4, Math.floor(maxPixels / inp.length));
+      const headerIn = document.createElement('div'); headerIn.textContent = 'Input grid'; headerIn.style.fontWeight='bold'; headerIn.style.marginBottom='4px'; left.appendChild(headerIn);
+      left.appendChild(renderGridToCanvas(inp, inScale));
+      let pred = data.solved_maze; if (!Array.isArray(pred[0])) { const L=pred.length; const s=Math.sqrt(L); if (!Number.isInteger(s)) throw new Error('Pred not square'); const g=[]; for(let r=0;r<s;r++) g.push(pred.slice(r*s,(r+1)*s)); pred=g; }
+      const scale = Math.max(4, Math.floor(maxPixels / pred.length));
+      const headerOut = document.createElement('div'); headerOut.textContent='Predicted grid'; headerOut.style.fontWeight='bold'; headerOut.style.marginBottom='4px'; right.appendChild(headerOut);
+      right.appendChild(renderGridToCanvas(pred, scale));
+      if (data.target_maze) { let gt=data.target_maze; if(!Array.isArray(gt[0])){ const L=gt.length; const s=Math.sqrt(L); if(Number.isInteger(s)){ const g=[]; for(let r=0;r<s;r++) g.push(gt.slice(r*s,(r+1)*s)); gt=g; }} const gtScale=Math.max(4, Math.floor(maxPixels/gt.length)); const gtHeader=document.createElement('div'); gtHeader.textContent='Ground truth'; gtHeader.style.fontWeight='bold'; gtHeader.style.marginTop='16px'; extra.appendChild(gtHeader); extra.appendChild(renderGridToCanvas(gt, gtScale)); }
+      wrap.appendChild(left); wrap.appendChild(right); if (extra.childNodes.length>0) wrap.appendChild(extra); holder.appendChild(wrap);
+      renderLegend();
+      document.getElementById('status').textContent = 'Status: loaded saved sample ' + name;
+    } catch (err) {
+      document.getElementById('status').textContent = 'Status: error - ' + err.message;
+      console.error(err);
+    }
+  }
+
+  document.getElementById('refreshSaved').addEventListener('click', refreshSavedList);
+  document.getElementById('loadSaved').addEventListener('click', loadSaved);
 
   // For future: support loading local examples (not required now). Hook placeholder.
   document.getElementById('loadExample').addEventListener('click', ()=>{

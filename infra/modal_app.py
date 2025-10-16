@@ -722,6 +722,32 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
                 target_maze = np.asarray(lbl_arr).reshape((side_lbl, side_lbl)).tolist()
 
     payload = {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index, "task": safe_task, "model": safe_model, "run_dir": out_dir}
+    # If caller POSTed a grid, persist the I/O→O/P triplet under out/<task>/<model>/custom/
+    if provided_grid is not None:
+        try:
+            import json as _json
+            import time, uuid
+            custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
+            os.makedirs(custom_dir, exist_ok=True)
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            name = f"{ts}-{uuid.uuid4().hex[:8]}.json"
+            save_path = os.path.join(custom_dir, name)
+            to_save = {
+                "task": safe_task,
+                "model": safe_model,
+                "input_maze": input_maze,
+                "solved_maze": solved_maze,
+                "target_maze": payload.get("target_maze"),
+                "created_at": ts,
+                "source": "custom-post",
+            }
+            with open(save_path, "w", encoding="utf-8") as f:
+                _json.dump(to_save, f)
+            payload["saved_file"] = name
+            payload["saved_dir"] = custom_dir
+        except Exception as _e:
+            # Non-fatal if saving fails; continue returning prediction
+            payload["saved_error"] = str(_e)
     if target_maze is not None:
         payload["target_maze"] = target_maze
     return payload
@@ -944,6 +970,81 @@ def list_runs(task: str = "maze", model: str | None = None):
     if os.path.islink(os.path.join(parent, "latest")):
         latest = os.readlink(os.path.join(parent, "latest"))
     return {"task": safe_task, "model": safe_model, "parent": parent, "latest": latest, "runs": entries}
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def list_custom(task: str = "maze", model: str | None = None):
+    """List saved custom I/O→O/P samples under out/<task>/<model>/custom."""
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    }
+    repo_dir = _ensure_repo()
+    base_out = os.path.join(repo_dir, "out")
+    safe_task = _safe_name(task)
+    if safe_task not in ("maze", "sudoku"):
+        return JSONResponse(content={"detail": "task must be 'maze' or 'sudoku'"}, status_code=400, headers=headers)
+    if safe_task == "maze":
+        safe_model = "default"
+    else:
+        safe_model = _safe_name(model or "mlp")
+        if safe_model not in ("mlp", "attn"):
+            return JSONResponse(content={"detail": "For sudoku, model must be 'mlp' or 'attn'"}, status_code=400, headers=headers)
+    custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
+    if not os.path.isdir(custom_dir):
+        return JSONResponse(content={"items": []}, headers=headers)
+    items = []
+    for fname in os.listdir(custom_dir):
+        if not fname.endswith('.json'):
+            continue
+        fpath = os.path.join(custom_dir, fname)
+        try:
+            mtime = os.path.getmtime(fpath)
+        except Exception:
+            mtime = 0
+        items.append({"name": fname, "mtime": mtime})
+    items.sort(key=lambda e: e["mtime"], reverse=True)
+    return JSONResponse(content={"task": safe_task, "model": safe_model, "dir": custom_dir, "items": items}, headers=headers)
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def get_custom(task: str = "maze", model: str | None = None, name: str | None = None):
+    """Fetch a saved custom sample by filename and return it for visualization."""
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    }
+    if not name:
+        return JSONResponse(content={"detail": "name is required"}, status_code=400, headers=headers)
+    repo_dir = _ensure_repo()
+    base_out = os.path.join(repo_dir, "out")
+    safe_task = _safe_name(task)
+    if safe_task not in ("maze", "sudoku"):
+        return JSONResponse(content={"detail": "task must be 'maze' or 'sudoku'"}, status_code=400, headers=headers)
+    if safe_task == "maze":
+        safe_model = "default"
+    else:
+        safe_model = _safe_name(model or "mlp")
+        if safe_model not in ("mlp", "attn"):
+            return JSONResponse(content={"detail": "For sudoku, model must be 'mlp' or 'attn'"}, status_code=400, headers=headers)
+    custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
+    import json as _json
+    try:
+        candidate = os.path.realpath(os.path.join(custom_dir, name))
+        if not candidate.startswith(os.path.realpath(custom_dir) + os.sep):
+            return JSONResponse(content={"detail": "invalid name"}, status_code=400, headers=headers)
+        if not os.path.exists(candidate):
+            return JSONResponse(content={"detail": "not found"}, status_code=404, headers=headers)
+        with open(candidate, 'r', encoding='utf-8') as f:
+            data = _json.load(f)
+        # Always include CORS
+        return JSONResponse(content=data, headers=headers)
+    except Exception as e:
+        return JSONResponse(content={"detail": str(e)}, status_code=500, headers=headers)
 
 
 @app.function(volumes={"/data": volume})
