@@ -15,6 +15,7 @@ import sys
 from huggingface_hub import hf_hub_download
 import modal
 from fastapi import Response, HTTPException
+from fastapi.responses import JSONResponse
 import shutil
 
 # Create a persistent volume for repo and data
@@ -98,13 +99,13 @@ def _ensure_repo(repo_dir: str = "/data/repo") -> str:
     try:
         src = os.path.join(repo_dir, "scripts", "run_eval_only.py")
         dst = os.path.join(repo_dir, "run_eval_only.py")
-        if not os.path.exists(dst) and os.path.exists(src):
+        if os.path.exists(src):
+            # Always refresh the root copy to pick up latest flags/behavior
             try:
-                os.replace(src, dst)
-                print(f"Moved eval runner to repo root: {dst}")
-            except Exception:
                 shutil.copy2(src, dst)
-                print(f"Copied eval runner to repo root: {dst}")
+                print(f"Synced eval runner to repo root: {dst}")
+            except Exception as _e:
+                print("WARNING: Failed to sync run_eval_only.py to repo root:", _e)
     except Exception as e:
         print("WARNING: Failed to place run_eval_only.py at repo root:", e)
     return repo_dir
@@ -239,7 +240,7 @@ def _do_download_all_weights():
     return {"status": "ok", "paths": results}
 
 
-def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 64):
+def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 16):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
@@ -266,15 +267,17 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
     os.makedirs(out_dir, exist_ok=True)
 
     # Choose arch override for MLP vs attention by temporarily swapping arch file
-    config_path = os.path.join(repo_dir, "config", "cfg_pretrain.yaml")
+    # Hydra.initialize requires config_path to be relative to the current working directory.
+    # We chdir(repo_dir) above, so pass a relative path here.
+    config_path = "config/cfg_pretrain.yaml"
     arch_dir = os.path.join(repo_dir, "config", "arch")
     trm_path = os.path.join(arch_dir, "trm.yaml")
     backup_path = os.path.join(arch_dir, "trm.yaml.bak")
 
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node=2", eval_script,
-        "--config", config_path,
+    "torchrun", "--nproc_per_node=2", eval_script,
+    "--config", config_path,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -283,6 +286,8 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    if one_batch:
+        cmd.append("--one-batch")
 
     need_mlp = (model or "mlp").lower() == "mlp"
     restored = False
@@ -345,6 +350,8 @@ def _do_run_eval_maze(batch_size: int = 64):
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    if one_batch:
+        cmd.append("--one-batch")
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     _symlink_latest(parent, out_dir)
@@ -684,7 +691,19 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
 @modal.fastapi_endpoint(docs=True)
 def predict(grid: object = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
     """Webhook: Predict solved grid from inputs or saved eval outputs."""
-    return _do_predict(grid=grid, index=index, file=file, task=task, model=model, run=run)
+    # Always include permissive CORS headers so visualizers on a different Modal subdomain can fetch this endpoint.
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    }
+    try:
+        payload = _do_predict(grid=grid, index=index, file=file, task=task, model=model, run=run)
+        return JSONResponse(content=payload, headers=headers)
+    except HTTPException as e:
+        # Ensure CORS headers are present even on errors (e.g., 404, 400) so the browser surfaces the JSON.
+        body = {"detail": e.detail}
+        return JSONResponse(content=body, status_code=e.status_code, headers=headers)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -730,7 +749,7 @@ def download_sudoku_weights(model: str = "mlp"):
 
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
-def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64):
+def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
     """Job: Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
@@ -761,11 +780,13 @@ def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, bat
 
     # Delegate to internal helper that handles MLP arch override and subset flags
     return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64):
+def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
     """Webhook: delegates to run_eval_sudoku_job."""
     return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size)
 
@@ -795,7 +816,8 @@ def download_all_weights():
 
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
-def run_eval_maze_job(batch_size: int = 64):
+def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
@@ -833,9 +855,10 @@ def run_eval_maze_job(batch_size: int = 64):
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_maze(batch_size: int = 64):
+def run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     """Webhook: delegates to run_eval_maze_job."""
     return _do_run_eval_maze(batch_size=batch_size)
+    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -973,19 +996,21 @@ def cli_prepare_dataset(include_maze: bool = True,
 
 
 @app.local_entrypoint()
-def cli_run_eval_maze(batch_size: int = 64):
+def cli_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     """Local entrypoint: trigger Maze evaluation."""
     res = run_eval_maze_job.remote(batch_size=batch_size)  # type: ignore
+    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)  # type: ignore
     print(res)
 
 
 @app.local_entrypoint()
-def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64):
+def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
     """Local entrypoint: trigger Sudoku evaluation.
     Example:
       modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
     """
     res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size)  # type: ignore
+    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
     print(res)
 
 

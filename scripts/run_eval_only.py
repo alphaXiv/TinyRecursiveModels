@@ -45,6 +45,7 @@ def parse_args():
     p.add_argument('--seed-start', type=int, default=0, help='Offset added to seed for each repeat (seed + seed-start + rep)')
     p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
     p.add_argument('--bf16', action='store_true', help='Use CUDA autocast with bfloat16 during evaluation for faster inference on A100')
+    p.add_argument('--one-batch', action='store_true', help='Evaluate only a single random batch of size global_batch_size from the test split (faster smoke test).')
     return p.parse_args()
 
 
@@ -123,9 +124,34 @@ def main():
         pass
 
     # Create dataloaders
-    # train_loader, train_metadata = create_dataloader(config, 'train', rank=RANK, world_size=WORLD_SIZE, test_set_mode=False, epochs_per_iter=1, global_batch_size=config.global_batch_size)
     try:
-        eval_loader, eval_metadata = create_dataloader(config, 'test', rank=RANK, world_size=WORLD_SIZE, test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size)
+        if args.one_batch:
+            # For a random batch: use the training-style sampler on the test split (random across groups)
+            # and then take just the first yielded batch.
+            eval_loader_full, eval_metadata = create_dataloader(
+                config, 'test', rank=RANK, world_size=WORLD_SIZE,
+                test_set_mode=False, epochs_per_iter=1, global_batch_size=config.global_batch_size
+            )
+            it = iter(eval_loader_full)
+            try:
+                first = next(it)
+            except StopIteration:
+                if RANK == 0:
+                    print('NO EVAL DATA FOUND')
+                return
+
+            if RANK == 0:
+                print('one-batch mode: evaluating a single random batch from test split')
+
+            def one_batch_iter():
+                yield first
+
+            eval_loader = one_batch_iter()
+        else:
+            eval_loader, eval_metadata = create_dataloader(
+                config, 'test', rank=RANK, world_size=WORLD_SIZE,
+                test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size
+            )
     except Exception:
         if RANK == 0:
             print('NO EVAL DATA FOUND')
