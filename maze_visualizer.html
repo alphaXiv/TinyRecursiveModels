@@ -22,6 +22,10 @@
     <label for="predFile">Preds file (optional):</label>
     <input id="predFile" type="text" placeholder="step_32550_all_preds.0" style="width:220px" />
     <button id="loadExample">Load Example (from uploaded .npy)</button>
+    <div style="margin-top:10px"></div>
+    <label>Paste input grid JSON (2D or flat):</label>
+    <textarea id="inputGridJson" rows="4" cols="60" placeholder="[[1,0,...], [0,1,...], ...]"></textarea>
+    <button id="sendInput">Predict from pasted grid (POST)</button>
   </div>
 
   <div id="status">Status: idle</div>
@@ -123,13 +127,14 @@
       const scale = Math.max(4, Math.floor(maxPixels / side));
 
       // Side-by-side layout
-      const wrap = document.createElement('div');
-      wrap.style.display = 'grid';
-      wrap.style.gridTemplateColumns = '1fr 1fr';
-      wrap.style.gap = '16px';
+  const wrap = document.createElement('div');
+  wrap.style.display = 'grid';
+  wrap.style.gridTemplateColumns = '1fr 1fr 1fr';
+  wrap.style.gap = '16px';
 
-      const left = document.createElement('div');
-      const right = document.createElement('div');
+  const left = document.createElement('div');
+  const right = document.createElement('div');
+  const extra = document.createElement('div');
 
   const headerIn = document.createElement('div');
   headerIn.textContent = 'Input grid';
@@ -169,8 +174,31 @@
   right.appendChild(headerOut);
       right.appendChild(renderGridToCanvas(grid, scale));
 
-      wrap.appendChild(left);
-      wrap.appendChild(right);
+      // Optional: ground truth labels if server returned target_maze
+      if (data.target_maze) {
+        const gtHeader = document.createElement('div');
+        gtHeader.textContent = 'Ground truth';
+        gtHeader.style.fontWeight = 'bold';
+        gtHeader.style.marginTop = '16px';
+        extra.appendChild(gtHeader);
+        let gt = data.target_maze;
+        if (!Array.isArray(gt[0])) {
+          const flat = gt;
+          const L = flat.length;
+          const side = Math.sqrt(L);
+          if (Number.isInteger(side)) {
+            const newGrid = [];
+            for (let r = 0; r < side; r++) newGrid.push(flat.slice(r*side, (r+1)*side));
+            gt = newGrid;
+          }
+        }
+        const gtScale = Math.max(4, Math.floor(maxPixels / gt.length));
+        extra.appendChild(renderGridToCanvas(gt, gtScale));
+      }
+
+  wrap.appendChild(left);
+  wrap.appendChild(right);
+  if (extra.childNodes.length > 0) wrap.appendChild(extra);
       holder.appendChild(wrap);
       const retIdx = Number.isInteger(data.index) ? data.index : idx;
       document.getElementById('status').textContent = 'Status: rendered (index: ' + retIdx + ', source: ' + (data.source_file || 'unknown') + ')';
@@ -206,6 +234,59 @@
   }
 
   document.getElementById('loadPreds').addEventListener('click', loadServerPrediction);
+
+  async function postInputGrid() {
+    const PREDICT_URL = document.getElementById('predictUrl').value.trim();
+    const raw = document.getElementById('inputGridJson').value.trim();
+    try {
+      if (!PREDICT_URL) throw new Error('Predict URL is empty');
+      if (!raw) throw new Error('Paste an input grid JSON');
+      const body = { grid: JSON.parse(raw), task: 'maze' };
+      const resp = await fetch(PREDICT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error('Server returned HTTP ' + resp.status);
+      const data = await resp.json();
+      // Reuse render path: pretend this is what GET returned
+      if (!data || !('solved_maze' in data)) throw new Error("Response JSON missing 'solved_maze'");
+      // Minimal reuse: set status and let user click Load Server Prediction to compare
+      document.getElementById('status').textContent = 'Status: POST prediction ok. Rendering...';
+      // Build a fake URL-less render path: just draw input and prediction
+      const holder = document.getElementById('canvasHolder');
+      holder.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.style.display = 'grid';
+      wrap.style.gridTemplateColumns = '1fr 1fr 1fr';
+      wrap.style.gap = '16px';
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      const extra = document.createElement('div');
+      const maxPixels = Math.min(window.innerWidth - 40, 900);
+      const inp = Array.isArray(data.input_maze) ? data.input_maze : body.grid;
+      if (!Array.isArray(inp[0])) {
+        const L = inp.length; const s = Math.sqrt(L); if (!Number.isInteger(s)) throw new Error('Input not square');
+        const g=[]; for (let r=0;r<s;r++) g.push(inp.slice(r*s,(r+1)*s));
+        data.input_maze = g;
+      }
+      const inScale = Math.max(4, Math.floor(maxPixels / data.input_maze.length));
+      const headerIn = document.createElement('div'); headerIn.textContent = 'Input grid'; headerIn.style.fontWeight='bold'; headerIn.style.marginBottom='4px'; left.appendChild(headerIn);
+      left.appendChild(renderGridToCanvas(data.input_maze, inScale));
+      let pred = data.solved_maze; if (!Array.isArray(pred[0])) { const L=pred.length; const s=Math.sqrt(L); if(!Number.isInteger(s)) throw new Error('Pred not square'); const g=[]; for(let r=0;r<s;r++) g.push(pred.slice(r*s,(r+1)*s)); pred=g; }
+      const scale = Math.max(4, Math.floor(maxPixels / pred.length));
+      const headerOut = document.createElement('div'); headerOut.textContent='Predicted grid'; headerOut.style.fontWeight='bold'; headerOut.style.marginBottom='4px'; right.appendChild(headerOut);
+      right.appendChild(renderGridToCanvas(pred, scale));
+      if (data.target_maze) { let gt=data.target_maze; if(!Array.isArray(gt[0])){ const L=gt.length; const s=Math.sqrt(L); if(Number.isInteger(s)){ const g=[]; for(let r=0;r<s;r++) g.push(gt.slice(r*s,(r+1)*s)); gt=g; }} const gtScale=Math.max(4, Math.floor(maxPixels/gt.length)); const gtHeader=document.createElement('div'); gtHeader.textContent='Ground truth'; gtHeader.style.fontWeight='bold'; gtHeader.style.marginTop='16px'; extra.appendChild(gtHeader); extra.appendChild(renderGridToCanvas(gt, gtScale)); }
+      wrap.appendChild(left); wrap.appendChild(right); if (extra.childNodes.length>0) wrap.appendChild(extra); holder.appendChild(wrap);
+      renderLegend();
+    } catch (err) {
+      document.getElementById('status').textContent = 'Status: error - ' + err.message;
+      console.error(err);
+    }
+  }
+
+  document.getElementById('sendInput').addEventListener('click', postInputGrid);
 
   // For future: support loading local examples (not required now). Hook placeholder.
   document.getElementById('loadExample').addEventListener('click', ()=>{

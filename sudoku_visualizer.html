@@ -37,6 +37,10 @@
     <input id="predFile" type="text" placeholder="step_xxx_all_preds.0" style="width:240px" />
 
     <button id="load">Load Server Prediction</button>
+    <div style="flex-basis:100%"></div>
+    <label>Paste input grid JSON (9x9 or flat 81):</label>
+    <textarea id="inputGridJson" rows="4" cols="60" placeholder="[[5,3,0,0,7,0,0,0,0], ...]"></textarea>
+    <button id="sendInput">Predict from pasted grid (POST)</button>
   </div>
 
   <div id="status">Status: idle</div>
@@ -145,13 +149,14 @@
       const holder = document.getElementById('canvasHolder');
       holder.innerHTML = '';
 
-      const wrap = document.createElement('div');
-      wrap.style.display = 'grid';
-      wrap.style.gridTemplateColumns = '1fr 1fr';
-      wrap.style.gap = '16px';
+  const wrap = document.createElement('div');
+  wrap.style.display = 'grid';
+  wrap.style.gridTemplateColumns = '1fr 1fr 1fr';
+  wrap.style.gap = '16px';
 
-      const left = document.createElement('div');
-      const right = document.createElement('div');
+  const left = document.createElement('div');
+  const right = document.createElement('div');
+  const extra = document.createElement('div');
 
       const headerIn = document.createElement('div');
       headerIn.textContent = 'Input (9x9)';
@@ -169,6 +174,34 @@
 
       wrap.appendChild(left);
       wrap.appendChild(right);
+
+      // Optional ground truth target (9x9) if present
+      if (data.target_maze) {
+        let gt = data.target_maze;
+        const headerGT = document.createElement('div');
+        headerGT.textContent = 'Ground truth (9x9)';
+        headerGT.style.fontWeight = 'bold';
+        headerGT.style.marginBottom = '4px';
+        extra.appendChild(headerGT);
+
+        function toSquareGrid(arr) {
+          if (Array.isArray(arr[0])) {
+            const h = arr.length, w = arr[0].length;
+            if (h !== w) throw new Error(`GT grid not square: ${h}x${w}`);
+            return arr;
+          }
+          const L = arr.length;
+          const side = Math.sqrt(L);
+          if (!Number.isInteger(side)) throw new Error(`GT grid length ${L} is not a perfect square`);
+          const grid2d = [];
+          for (let r = 0; r < side; r++) grid2d.push(arr.slice(r*side, (r+1)*side));
+          return grid2d;
+        }
+        gt = toSquareGrid(gt);
+        if (gt.length !== 9 || gt[0].length !== 9) throw new Error(`GT grid is ${gt.length}x${gt[0].length}, expected 9x9`);
+        extra.appendChild(renderGridToCanvas(gt, 48));
+        wrap.appendChild(extra);
+      }
       holder.appendChild(wrap);
 
       const retIdx = Number.isInteger(data.index) ? data.index : idx;
@@ -181,6 +214,49 @@
   }
 
   document.getElementById('load').addEventListener('click', loadServerPrediction);
+  async function postInputGrid() {
+    const PREDICT_URL = document.getElementById('predictUrl').value.trim();
+    const task = document.getElementById('task').value;
+    const model = document.getElementById('model').value;
+    const raw = document.getElementById('inputGridJson').value.trim();
+    try {
+      if (!PREDICT_URL) throw new Error('Predict URL is empty');
+      if (!raw) throw new Error('Paste an input grid JSON');
+      const body = { grid: JSON.parse(raw), task, model };
+      const resp = await fetch(PREDICT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) throw new Error('Server returned HTTP ' + resp.status);
+      const data = await resp.json();
+      if (!data || !('solved_maze' in data) || !('input_maze' in data)) throw new Error('Missing fields in response');
+      const holder = document.getElementById('canvasHolder');
+      holder.innerHTML = '';
+      const wrap = document.createElement('div');
+      wrap.style.display = 'grid';
+      wrap.style.gridTemplateColumns = '1fr 1fr 1fr';
+      wrap.style.gap = '16px';
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      const extra = document.createElement('div');
+      const headerIn = document.createElement('div'); headerIn.textContent='Input (9x9)'; headerIn.style.fontWeight='bold'; headerIn.style.marginBottom='4px'; left.appendChild(headerIn);
+      let inp = data.input_maze; if (!Array.isArray(inp[0])) { const L=inp.length; const s=Math.sqrt(L); if (!Number.isInteger(s)) throw new Error('Input not square'); const g=[]; for(let r=0;r<s;r++) g.push(inp.slice(r*s,(r+1)*s)); inp=g; }
+      if (inp.length !== 9 || inp[0].length !== 9) throw new Error('Input must be 9x9');
+      left.appendChild(renderGridToCanvas(inp, 48));
+      const headerOut = document.createElement('div'); headerOut.textContent='Prediction (9x9)'; headerOut.style.fontWeight='bold'; headerOut.style.marginBottom='4px'; right.appendChild(headerOut);
+      let pred = data.solved_maze; if (!Array.isArray(pred[0])) { const L=pred.length; const s=Math.sqrt(L); if (!Number.isInteger(s)) throw new Error('Pred not square'); const g=[]; for(let r=0;r<s;r++) g.push(pred.slice(r*s,(r+1)*s)); pred=g; }
+      if (pred.length !== 9 || pred[0].length !== 9) throw new Error('Prediction must be 9x9');
+      right.appendChild(renderGridToCanvas(pred, 48));
+      if (data.target_maze) { let gt=data.target_maze; if (!Array.isArray(gt[0])) { const L=gt.length; const s=Math.sqrt(L); if (!Number.isInteger(s)) throw new Error('GT not square'); const g=[]; for(let r=0;r<s;r++) g.push(gt.slice(r*s,(r+1)*s)); gt=g; } if (gt.length!==9||gt[0].length!==9) throw new Error('GT must be 9x9'); const headerGT=document.createElement('div'); headerGT.textContent='Ground truth (9x9)'; headerGT.style.fontWeight='bold'; headerGT.style.marginBottom='4px'; extra.appendChild(headerGT); extra.appendChild(renderGridToCanvas(gt,48)); }
+      wrap.appendChild(left); wrap.appendChild(right); if (extra.childNodes.length>0) wrap.appendChild(extra); holder.appendChild(wrap);
+      document.getElementById('status').textContent = 'Status: rendered from POST';
+    } catch (err) {
+      document.getElementById('status').textContent = 'Status: error - ' + err.message;
+      console.error(err);
+    }
+  }
+  document.getElementById('sendInput').addEventListener('click', postInputGrid);
   </script>
 </body>
 </html>

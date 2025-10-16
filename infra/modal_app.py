@@ -14,7 +14,7 @@ import subprocess
 import sys
 from huggingface_hub import hf_hub_download
 import modal
-from fastapi import Response, HTTPException
+from fastapi import Response, HTTPException, Body
 from fastapi.responses import JSONResponse
 import shutil
 
@@ -88,13 +88,19 @@ def _safe_name(s: str) -> str:
 
 def _ensure_repo(repo_dir: str = "/data/repo") -> str:
     repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    
-    # if os.path.exists(repo_dir):
-        # shutil.rmtree(repo_dir)
-    
     if not os.path.exists(repo_dir):
         print(f"Cloning repo from {repo_url}...")
         subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
+    else:
+        # Keep the repo up to date with origin/main
+        try:
+            print(f"Updating existing repo at {repo_dir}...")
+            subprocess.run(["git", "-C", repo_dir, "fetch", "--all", "--prune"], check=True)
+            subprocess.run(["git", "-C", repo_dir, "reset", "--hard", "origin/main"], check=True)
+            # Optional: show current commit for debugging
+            subprocess.run(["git", "-C", repo_dir, "rev-parse", "--short", "HEAD"], check=True)
+        except Exception as e:
+            print("WARNING: Failed to update repo; proceeding with existing contents:", e)
     # Ensure run_eval_only.py is at repo root (idempotent). If not, copy from scripts/ if present.
     try:
         src = os.path.join(repo_dir, "scripts", "run_eval_only.py")
@@ -630,6 +636,7 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
 
     # Prepare input_maze: if user provided a grid, echo it; otherwise load corresponding inputs shard
     input_maze = None
+    target_maze = None
     if provided_grid is not None:
         # Validate provided input grid strictly
         in_arr = np.array(provided_grid)
@@ -684,17 +691,57 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
             side_in = int(side_f)
             input_maze = np.asarray(in_arr).reshape((side_in, side_in)).tolist()
 
-    return {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index, "task": safe_task, "model": safe_model, "run_dir": out_dir}
+        # Load ground-truth labels from the same saved dict if available
+        labels_tensor = None
+        for k in ("labels", "all_labels", "all__labels", "label", "y", "ys", "solutions", "targets"):
+            if k in data:
+                labels_tensor = data[k]
+                break
+        if labels_tensor is not None:
+            try:
+                sel_lbl = labels_tensor[ret_index]
+            except Exception:
+                raise HTTPException(status_code=400, detail="Failed to index into saved labels tensor")
+
+            try:
+                lbl_arr = sel_lbl.detach().cpu().numpy() if hasattr(sel_lbl, 'detach') else np.array(sel_lbl)
+            except Exception:
+                lbl_arr = np.array(sel_lbl)
+
+            if getattr(lbl_arr, 'ndim', 0) == 2:
+                lh, lw = int(lbl_arr.shape[0]), int(lbl_arr.shape[1])
+                if lh != lw:
+                    raise HTTPException(status_code=400, detail=f"Saved label grid is not square: {lh}x{lw}")
+                target_maze = np.asarray(lbl_arr).tolist()
+            else:
+                L_lbl = lbl_arr.shape[-1] if getattr(lbl_arr, 'ndim', 0) > 0 else (lbl_arr.size if hasattr(lbl_arr, 'size') else len(lbl_arr))
+                side_f_lbl = math.sqrt(L_lbl)
+                if not float(side_f_lbl).is_integer():
+                    raise HTTPException(status_code=400, detail=f"Saved label grid length {L_lbl} is not a perfect square")
+                side_lbl = int(side_f_lbl)
+                target_maze = np.asarray(lbl_arr).reshape((side_lbl, side_lbl)).tolist()
+
+    payload = {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index, "task": safe_task, "model": safe_model, "run_dir": out_dir}
+    if target_maze is not None:
+        payload["target_maze"] = target_maze
+    return payload
 
 
 @app.function(image = IMAGE, volumes= {"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def predict(grid: object = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
+def predict(
+    grid: object | None = Body(default=None),
+    index: int | None = None,
+    file: str | None = None,
+    task: str | None = Body(default=None),
+    model: str | None = Body(default=None),
+    run: str | None = Body(default=None),
+):
     """Webhook: Predict solved grid from inputs or saved eval outputs."""
     # Always include permissive CORS headers so visualizers on a different Modal subdomain can fetch this endpoint.
     headers = {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization"
     }
     try:
@@ -834,6 +881,13 @@ def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
     os.makedirs(out_dir, exist_ok=True)
     # subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=False)
     eval_script = _get_eval_script_path(repo_dir)
+    # Detect if eval script supports --one-batch
+    supports_one_batch = False
+    try:
+        with open(eval_script, "r", encoding="utf-8") as f:
+            supports_one_batch = "--one-batch" in f.read()
+    except Exception:
+        pass
     cmd = [
         "torchrun", "--nproc_per_node=2", eval_script,
         "--checkpoint", ckpt_path,
@@ -845,7 +899,10 @@ def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
         "--global-batch-size", str(int(batch_size)),
     ]
     if one_batch:
-        cmd.append("--one-batch")
+        if supports_one_batch:
+            cmd.append("--one-batch")
+        else:
+            print("WARNING: --one-batch requested, but eval script does not support it. Running full test set.")
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     _symlink_latest(parent, out_dir)
@@ -893,7 +950,7 @@ def list_runs(task: str = "maze", model: str | None = None):
 @modal.fastapi_endpoint(docs=True)
 def get_maze_visualizer():
     """Serve the simple maze-only visualizer HTML."""
-    repo_dir = "/data/repo"
+    repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     html_path = os.path.join(repo_dir, "maze_visualizer.html")
 
@@ -910,7 +967,7 @@ def get_maze_visualizer():
 @modal.fastapi_endpoint(docs=True)
 def get_sudoku_visualizer():
     """Serve the Sudoku visualizer HTML."""
-    repo_dir = "/data/repo"
+    repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     html_path = os.path.join(repo_dir, "sudoku_visualizer.html")
 
@@ -927,7 +984,7 @@ def get_sudoku_visualizer():
 @modal.fastapi_endpoint(docs=True)
 def get_unified_visualizer():
     """Serve the unified visualizer HTML (task/model/run switcher)."""
-    repo_dir = "/data/repo"
+    repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     html_path = os.path.join(repo_dir, "unified_visualizer.html")
 
