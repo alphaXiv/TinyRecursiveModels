@@ -14,7 +14,7 @@ import subprocess
 import sys
 from huggingface_hub import hf_hub_download
 import modal
-from fastapi import Response, HTTPException, Body
+from fastapi import Response, HTTPException, Body, Query
 from fastapi.responses import JSONResponse
 import shutil
 
@@ -453,7 +453,7 @@ def download_weights():
     )
     return {"status": "Weights downloaded", "path": checkpoint_path}
 
-
+# 1) make sure that the repo is only updated once when i like call the prepr dataset func only not everytimw with eval function call or any other fucntion call spls slows down a lot
 # @app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
 def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out", batch_size: int = 64):
@@ -759,9 +759,13 @@ def predict(
     grid: object | None = Body(default=None),
     index: int | None = None,
     file: str | None = None,
+    # Accept task/model/run from body OR query; merge below.
     task: str | None = Body(default=None),
     model: str | None = Body(default=None),
     run: str | None = Body(default=None),
+    task_q: str | None = Query(default=None, alias="task"),
+    model_q: str | None = Query(default=None, alias="model"),
+    run_q: str | None = Query(default=None, alias="run"),
 ):
     """Webhook: Predict solved grid from inputs or saved eval outputs."""
     # Always include permissive CORS headers so visualizers on a different Modal subdomain can fetch this endpoint.
@@ -771,7 +775,11 @@ def predict(
         "Access-Control-Allow-Headers": "Content-Type, Authorization"
     }
     try:
-        payload = _do_predict(grid=grid, index=index, file=file, task=task, model=model, run=run)
+        # Merge body and query values; prefer body when provided
+        eff_task = task if task is not None else task_q
+        eff_model = model if model is not None else model_q
+        eff_run = run if run is not None else run_q
+        payload = _do_predict(grid=grid, index=index, file=file, task=eff_task, model=eff_model, run=eff_run)
         return JSONResponse(content=payload, headers=headers)
     except HTTPException as e:
         # Ensure CORS headers are present even on errors (e.g., 404, 400) so the browser surfaces the JSON.
