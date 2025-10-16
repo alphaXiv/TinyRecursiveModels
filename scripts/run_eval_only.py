@@ -45,9 +45,6 @@ def parse_args():
     p.add_argument('--seed-start', type=int, default=0, help='Offset added to seed for each repeat (seed + seed-start + rep)')
     p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
     p.add_argument('--bf16', action='store_true', help='Use CUDA autocast with bfloat16 during evaluation for faster inference on A100')
-    # Subset controls: process only a small portion of the test set to speed up inference
-    p.add_argument('--subset-examples', type=int, default=None, help='If set, cap total number of evaluated examples to this value (across all batches)')
-    p.add_argument('--subset-batches', type=int, default=None, help='If set, cap total number of evaluated batches to this value')
     return p.parse_args()
 
 
@@ -134,58 +131,7 @@ def main():
             print('NO EVAL DATA FOUND')
         return
 
-    # If requested, wrap eval_loader to limit processed batches/examples
-    if args.subset_batches is not None or args.subset_examples is not None:
-        import itertools
-        import random
-
-        # Use a system-entropy-backed RNG so selection varies across runs regardless of torch seed
-        sysrand = random.SystemRandom()
-
-        def _batch_size_from(batch_dict: dict) -> int:
-            # Heuristic: find first tensor-like with leading dimension
-            for v in batch_dict.values():
-                try:
-                    if hasattr(v, 'shape') and len(v.shape) >= 1:
-                        return int(v.shape[0])
-                except Exception:
-                    continue
-            return 1
-
-        def limited_loader(loader, max_batches=None, max_examples=None):
-            seen_batches = 0
-            seen_examples = 0
-            # Randomly skip some initial batches to vary the sampled window across runs
-            # Choose a larger window to enhance randomness across epochs; fall back if we skip too much
-            random_skip = sysrand.randint(0, 512)
-
-            passes = 0
-            while True:
-                passes += 1
-                skipped = 0
-                for item in loader:
-                    if passes == 1 and skipped < random_skip:
-                        skipped += 1
-                        continue
-                    if max_batches is not None and seen_batches >= max_batches:
-                        return
-                    if max_examples is not None and seen_examples >= max_examples:
-                        return
-                    set_name, batch, global_bs = item
-                    bsz = _batch_size_from(batch)
-                    # If this batch would exceed max_examples, we still include it wholly to keep code simple
-                    yield (set_name, batch, global_bs)
-                    seen_batches += 1
-                    seen_examples += bsz
-                # If limits not reached after first pass (e.g., we skipped too much), do at most one more pass from start
-                if passes >= 2:
-                    return
-
-        eval_loader = cast(Any, limited_loader(
-            eval_loader,
-            max_batches=args.subset_batches,
-            max_examples=args.subset_examples,
-        ))
+    # No subset limiting: evaluate using the configured global batch size across the full test set
 
     # Evaluators
     try:

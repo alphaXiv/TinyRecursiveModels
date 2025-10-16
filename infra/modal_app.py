@@ -239,7 +239,7 @@ def _do_download_all_weights():
     return {"status": "ok", "paths": results}
 
 
-def _do_run_eval_sudoku(model: str, dataset_path: str | None):
+def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 64):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
@@ -281,7 +281,7 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None):
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
-        "--subset-examples", "64",
+        "--global-batch-size", str(int(batch_size)),
     ]
 
     need_mlp = (model or "mlp").lower() == "mlp"
@@ -315,7 +315,7 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None):
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
-def _do_run_eval_maze():
+def _do_run_eval_maze(batch_size: int = 64):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
@@ -343,7 +343,7 @@ def _do_run_eval_maze():
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
-        "--subset-examples", "64",
+        "--global-batch-size", str(int(batch_size)),
     ]
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -386,7 +386,7 @@ def prepare_dataset(include_maze: bool = True,
 
 @app.function(image=IMAGE, timeout=3600, gpu="A100:2",volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out"):
+def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out", batch_size: int = 64):
     """Run evaluation on the mounted test dataset and save predictions to persistent volume.
 
     This will raise on any failure (no fallback behavior) as requested.
@@ -408,7 +408,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
-        "--subset-examples", "64",
+        "--global-batch-size", str(int(batch_size)),
     ]
     print(f"Running evaluation command: {' '.join(cmd)}")
     # Run and raise on failure
@@ -443,7 +443,7 @@ def download_weights():
 
 # @app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
-def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out"):
+def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out", batch_size: int = 64):
     """Run evaluation locally on mounted repo data.
 
     Args:
@@ -482,7 +482,7 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
-        "--subset-examples", "64",
+        "--global-batch-size", str(int(batch_size)),
     ]
     print(f"Running command: {' '.join(cmd)}")
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -730,7 +730,7 @@ def download_sudoku_weights(model: str = "mlp"):
 
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
-def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None):
+def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64):
     """Job: Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
@@ -760,14 +760,14 @@ def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None):
     os.makedirs(out_dir, exist_ok=True)
 
     # Delegate to internal helper that handles MLP arch override and subset flags
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None):
+def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64):
     """Webhook: delegates to run_eval_sudoku_job."""
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -795,7 +795,7 @@ def download_all_weights():
 
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
-def run_eval_maze_job():
+def run_eval_maze_job(batch_size: int = 64):
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
@@ -823,7 +823,7 @@ def run_eval_maze_job():
         "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
         "--eval-only",
         "--bf16",
-        "--subset-examples", "64",
+        "--global-batch-size", str(int(batch_size)),
     ]
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
@@ -833,9 +833,9 @@ def run_eval_maze_job():
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_maze():
+def run_eval_maze(batch_size: int = 64):
     """Webhook: delegates to run_eval_maze_job."""
-    return _do_run_eval_maze()
+    return _do_run_eval_maze(batch_size=batch_size)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -866,48 +866,6 @@ def list_runs(task: str = "maze", model: str | None = None):
     if os.path.islink(os.path.join(parent, "latest")):
         latest = os.readlink(os.path.join(parent, "latest"))
     return {"task": safe_task, "model": safe_model, "parent": parent, "latest": latest, "runs": entries}
-
-
-# @app.function(volumes={"/data": volume})
-# @modal.fastapi_endpoint(docs=True)
-# def get_visualizer():
-#     """Serve the maze visualizer HTML."""
-#     # Serve the external `puzzle_visualizer.html` from the repo in the persistent volume
-#     repo_dir = "/data/repo"
-#     os.chdir(repo_dir)
-#     html_path = os.path.join(repo_dir, "puzzle_visualizer.html")
-
-#     subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=False)
-#     if not os.path.exists(html_path):
-#         raise FileNotFoundError(f"Visualizer HTML not found at {html_path}; ensure repo is cloned and file exists")
-
-#     with open(html_path, 'r', encoding='utf-8') as f:
-#         content = f.read()
-
-#     # Attempt to inline npyjs if the HTML references it so the client
-#     # doesn't need to fetch /assets/npyjs.js separately (which may 404
-#     # due to routing differences). This ensures the visualizer gets the
-#     # library directly from the repository file.
-#     try:
-#         # Look for common script tags that reference the asset
-#         if 'npyjs.js' in content:
-#             asset_file = os.path.join(repo_dir, 'assets', 'npyjs.js')
-#             if os.path.exists(asset_file):
-#                 with open(asset_file, 'r', encoding='utf-8') as af:
-#                     npyjs_src = af.read()
-
-#                 # Replace any <script src="...npyjs.js"></script> with inline code
-#                 # Match both /get_asset?filename=npyjs.js and assets/npyjs.js occurrences
-#                 content = content.replace('<script src="/get_asset?filename=npyjs.js"></script>', f'<script>\n{npyjs_src}\n</script>')
-#                 content = content.replace('<script src="assets/npyjs.js"></script>', f'<script>\n{npyjs_src}\n</script>')
-#                 content = content.replace("<script src='assets/npyjs.js'></script>", f"<script>\n{npyjs_src}\n</script>")
-#                 print(f"Inlined npyjs from {asset_file} into visualizer HTML")
-#             else:
-#                 print(f"npyjs asset not found at {asset_file}; leaving HTML unchanged")
-#     except Exception as e:
-#         print(f"Failed to inline npyjs.js into visualizer HTML: {e}")
-
-#     return Response(content, media_type="text/html")
 
 
 @app.function(volumes={"/data": volume})
@@ -1015,19 +973,19 @@ def cli_prepare_dataset(include_maze: bool = True,
 
 
 @app.local_entrypoint()
-def cli_run_eval_maze():
+def cli_run_eval_maze(batch_size: int = 64):
     """Local entrypoint: trigger Maze evaluation."""
-    res = run_eval_maze_job.remote()  # type: ignore
+    res = run_eval_maze_job.remote(batch_size=batch_size)  # type: ignore
     print(res)
 
 
 @app.local_entrypoint()
-def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None):
+def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64):
     """Local entrypoint: trigger Sudoku evaluation.
     Example:
       modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
     """
-    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path)  # type: ignore
+    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size)  # type: ignore
     print(res)
 
 
