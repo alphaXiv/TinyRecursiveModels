@@ -10,16 +10,28 @@ Notes:
 """
 
 import os
-import subprocess
 import sys
-from huggingface_hub import hf_hub_download
-import modal
-from fastapi import Response, HTTPException, Body, Query
-from fastapi.responses import JSONResponse
+import subprocess
 import shutil
 import threading
 import types
+import json
+import json as _json
+import time
+import uuid
+import math
+import re
+
+import numpy as np
+import torch
 import yaml
+from typing import Any, Dict, cast
+from omegaconf import OmegaConf
+from huggingface_hub import hf_hub_download
+import modal
+from fastapi import Response, HTTPException, Body, Query, FastAPI
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 # Create a persistent volume for repo and data
 volume = modal.Volume.from_name("tinyrecursive-data", create_if_missing=True)
@@ -69,11 +81,9 @@ APP_NAME = "tinyrecursive-eval"
 app = modal.App(name=APP_NAME, image=IMAGE)
 
 # CORS: allow visualizer and predict to call across Modal subdomains
-from fastapi.middleware.cors import CORSMiddleware
 fastapi_app = None
 try:
     # Create a small FastAPI app only to attach middleware; Modal will mount endpoints into its own FastAPI instance.
-    from fastapi import FastAPI
     fastapi_app = FastAPI()
     fastapi_app.add_middleware(
         CORSMiddleware,
@@ -92,7 +102,6 @@ _PRED_CACHE_META: dict[str, float] = {}  # store mtime to invalidate when file c
 _PRED_CACHE_MAX = 8  # keep a handful of recent files
 
 def _load_preds_cached(preds_path: str):
-    import torch, os
     mtime = os.path.getmtime(preds_path)
     with _PRED_CACHE_LOCK:
         cached = _PRED_CACHE.get(preds_path)
@@ -179,7 +188,6 @@ def _load_checkpoint_compat(model, ckpt_path: str):
         pass
 
 def _load_dataset_metadata(repo_dir: str, task: str) -> dict:
-    import json as _json
     if task == "maze":
         meta_paths = [
             os.path.join(repo_dir, "data", "maze-30x30-hard-1k", "test", "dataset.json"),
@@ -213,7 +221,6 @@ def _get_realtime_model(task: str, model: str | None):
 
     # Build new model
     os.environ.setdefault("DISABLE_COMPILE", "1")
-    import torch
     from models.recursive_reasoning.trm import TinyRecursiveReasoningModel_ACTV1
     from models.losses import ACTLossHead
 
@@ -268,7 +275,6 @@ def _get_realtime_model(task: str, model: str | None):
     return entry
 
 def _format_grid_for_task(task: str, meta: dict, grid: list) -> list:
-    import numpy as np
     arr = np.array(grid)
     if arr.ndim == 1:
         side = int(np.sqrt(arr.size))
@@ -280,7 +286,6 @@ def _format_grid_for_task(task: str, meta: dict, grid: list) -> list:
     return arr.astype(int).tolist()
 
 def _postprocess_preds_for_task(task: str, meta: dict, pred_tokens_1d: list[int]) -> list[list[int]]:
-    import numpy as np
     arr = np.array(pred_tokens_1d)
     side = int(np.sqrt(arr.size))
     arr = arr.reshape(side, side)
@@ -318,7 +323,6 @@ def predict_realtime(
                 raise HTTPException(status_code=400, detail="For sudoku, model must be 'mlp' or 'attn'")
 
         # Parse grid
-        import json as _json
         g = grid if grid is not None else grid_q
         if isinstance(g, str):
             g = _json.loads(g)
@@ -336,9 +340,7 @@ def predict_realtime(
 
         # Prepare batch tensors
         inp2d = _format_grid_for_task(eff_task, meta, g)
-        import numpy as np
         flat = np.array(inp2d).reshape(-1)
-        import torch
         inputs = torch.from_numpy(flat.astype("int32")).unsqueeze(0).to(device)
         puzzle_identifiers = torch.zeros((1,), dtype=torch.int32, device=device)
         labels = inputs.clone()  # dummy labels; unused for preds
@@ -454,7 +456,6 @@ def _bootstrap_repo_and_weights(repo_dir: str = "/data/repo") -> dict:
         print("WARNING: Failed to sync run_eval_only.py:", e)
 
     # Download all weights once
-    from huggingface_hub import hf_hub_download
     results: dict[str, str] = {}
     # Maze weights
     maze_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights")
@@ -597,7 +598,6 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
     # Output in per-run directory: out/sudoku/<model>/<run_id>
     parent = os.path.join(repo_dir, "out", "sudoku", (model or "mlp").lower())
     os.makedirs(parent, exist_ok=True)
-    import time
     run_id = time.strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
@@ -633,14 +633,13 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
             if os.path.exists(trm_path):
                 shutil.copy2(trm_path, backup_path)
             # Parse YAML and set mlp_t True
-            import yaml as _yaml
             with open(trm_path, "r", encoding="utf-8") as f:
-                data = _yaml.safe_load(f)
+                data = yaml.safe_load(f)
             # Set flag
             data["mlp_t"] = True
             # Write back
             with open(trm_path, "w", encoding="utf-8") as f:
-                _yaml.safe_dump(data, f, sort_keys=False)
+                yaml.safe_dump(data, f, sort_keys=False)
         print("Running Sudoku eval:", " ".join(cmd))
         result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     finally:
@@ -668,7 +667,6 @@ def _do_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     # subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     parent = os.path.join(repo_dir, "out", "maze", "default")
     os.makedirs(parent, exist_ok=True)
-    import time
     run_id = time.strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
@@ -859,7 +857,6 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
         preds_path = candidate
     else:
         # Choose deterministically: file with largest step number in name step_<N>_all_preds.*
-        import re
         best = None
         best_step = -1
         for fname in os.listdir(out_dir):
@@ -887,16 +884,14 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
     provided_grid = None
     if grid is not None:
         # grid may be a JSON string (from query) or a Python list (from body)
-        import json
         try:
             if isinstance(grid, str):
-                provided_grid = json.loads(grid)
+                provided_grid = _json.loads(grid)
             else:
                 provided_grid = grid  # assume list-like
         except Exception:
             return {"error": "Failed to parse provided grid; send JSON list in POST body or JSON string in 'grid' query param."}
 
-    import numpy as np
     ret_index = None
     if provided_grid is not None:
         grid_arr = np.array(provided_grid)
@@ -922,7 +917,6 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
             grid_arr = np.array(sel)
 
     # Normalize predicted grid to square 2D array strictly
-    import math
     if getattr(grid_arr, 'ndim', 0) == 2:
         h, w = int(grid_arr.shape[0]), int(grid_arr.shape[1])
         if h != w:
@@ -1028,8 +1022,6 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
     # If caller POSTed a grid, persist the I/O→O/P triplet under out/<task>/<model>/custom/
     if provided_grid is not None:
         try:
-            import json as _json
-            import time, uuid
             custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
             os.makedirs(custom_dir, exist_ok=True)
             ts = time.strftime("%Y%m%d-%H%M%S")
@@ -1294,7 +1286,6 @@ def get_custom(task: str = "maze", model: str | None = None, name: str | None = 
         if safe_model not in ("mlp", "attn"):
             return JSONResponse(content={"detail": "For sudoku, model must be 'mlp' or 'attn'"}, status_code=400, headers=headers)
     custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
-    import json as _json
     try:
         candidate = os.path.realpath(os.path.join(custom_dir, name))
         if not candidate.startswith(os.path.realpath(custom_dir) + os.sep):
@@ -1446,24 +1437,8 @@ def cli_predict(task: str = "maze",
                 grid_json: str | None = None,
                 grid_file: str | None = None):
     """Local entrypoint: call predict remotely with flags.
-    Examples:
-      # Maze latest run, first example
-      modal run infra/modal_app.py::cli_predict --task=maze --index=0
-
-      # Sudoku (MLP), latest run, 10th example
-      modal run infra/modal_app.py::cli_predict --task=sudoku --model=mlp --index=9
-
-      # Pin run and file
-      modal run infra/modal_app.py::cli_predict --task=maze --run=20251015-202010 --file=step_32550_all_preds.0 --index=0
-
-      # Provide grid via JSON string
-      modal run infra/modal_app.py::cli_predict --task=sudoku --model=attn --grid-json='[[0,1,2],[3,4,5],[6,7,8]]'
-
-      # Provide grid via JSON file path
-      modal run infra/modal_app.py::cli_predict --task=maze --grid-file=/path/to/grid.json
     """
     grid = None
-    import json as _json
     if grid_json:
         grid = _json.loads(grid_json)
     elif grid_file:
