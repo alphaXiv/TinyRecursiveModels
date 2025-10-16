@@ -240,7 +240,7 @@ def _do_download_all_weights():
     return {"status": "ok", "paths": results}
 
 
-def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 16):
+def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 16, one_batch: bool = False):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
@@ -276,8 +276,8 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
 
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-    "torchrun", "--nproc_per_node=2", eval_script,
-    "--config", config_path,
+        "torchrun", "--nproc_per_node=2", eval_script,
+        "--config", config_path,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -320,7 +320,7 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
-def _do_run_eval_maze(batch_size: int = 64):
+def _do_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
@@ -778,17 +778,15 @@ def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, bat
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    # Delegate to internal helper that handles MLP arch override and subset flags
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size)
+    # Delegate to internal helper that handles MLP arch override and flags
     return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
     """Webhook: delegates to run_eval_sudoku_job."""
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -817,7 +815,6 @@ def download_all_weights():
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
 def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
-    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
@@ -847,6 +844,8 @@ def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    if one_batch:
+        cmd.append("--one-batch")
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     _symlink_latest(parent, out_dir)
@@ -857,7 +856,6 @@ def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
 @modal.fastapi_endpoint(docs=True)
 def run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     """Webhook: delegates to run_eval_maze_job."""
-    return _do_run_eval_maze(batch_size=batch_size)
     return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch)
 
 
@@ -998,7 +996,6 @@ def cli_prepare_dataset(include_maze: bool = True,
 @app.local_entrypoint()
 def cli_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     """Local entrypoint: trigger Maze evaluation."""
-    res = run_eval_maze_job.remote(batch_size=batch_size)  # type: ignore
     res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)  # type: ignore
     print(res)
 
@@ -1009,7 +1006,6 @@ def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, bat
     Example:
       modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
     """
-    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size)  # type: ignore
     res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
     print(res)
 
