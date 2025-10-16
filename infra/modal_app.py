@@ -1,4 +1,3 @@
-
 """Modal app for maze solving evaluation and prediction.
 
 Usage:
@@ -80,7 +79,6 @@ IMAGE = (
 APP_NAME = "tinyrecursive-eval"
 app = modal.App(name=APP_NAME, image=IMAGE)
 
-# CORS: allow visualizer and predict to call across Modal subdomains
 fastapi_app = None
 try:
     # Create a small FastAPI app only to attach middleware; Modal will mount endpoints into its own FastAPI instance.
@@ -102,6 +100,11 @@ _PRED_CACHE_META: dict[str, float] = {}  # store mtime to invalidate when file c
 _PRED_CACHE_MAX = 8  # keep a handful of recent files
 
 def _load_preds_cached(preds_path: str):
+    """Load a torch-saved predictions file with a tiny mtime-based cache.
+
+    The cache keeps a few recent files keyed by path and invalidates entries when the
+    file's modification time changes. Returns the loaded object (typically a dict of tensors).
+    """
     mtime = os.path.getmtime(preds_path)
     with _PRED_CACHE_LOCK:
         cached = _PRED_CACHE.get(preds_path)
@@ -188,6 +191,11 @@ def _load_checkpoint_compat(model, ckpt_path: str):
         pass
 
 def _load_dataset_metadata(repo_dir: str, task: str) -> dict:
+    """Return dataset metadata for the given task by reading the first existing dataset.json.
+
+    Looks under standard paths for Maze and Sudoku test sets inside the mounted repo.
+    Raises RuntimeError if none are found.
+    """
     if task == "maze":
         meta_paths = [
             os.path.join(repo_dir, "data", "maze-30x30-hard-1k", "test", "dataset.json"),
@@ -204,7 +212,11 @@ def _load_dataset_metadata(repo_dir: str, task: str) -> dict:
     raise RuntimeError(f"Dataset metadata not found for task={task} under known paths: {meta_paths}")
 
 def _get_realtime_model(task: str, model: str | None):
-    """Return cached ACT-wrapped model and metadata for realtime inference."""
+    """Return cached ACT-wrapped model and metadata for realtime inference.
+
+    Ensures the repo is present and importable, resolves the architecture config, constructs
+    the TinyRecursiveReasoningModel with ACT head, moves it to device, and loads weights.
+    """
     repo_dir = _ensure_repo()
     # Ensure local repo's Python packages (e.g., 'models') are importable
     if repo_dir not in sys.path:
@@ -275,6 +287,7 @@ def _get_realtime_model(task: str, model: str | None):
     return entry
 
 def _format_grid_for_task(task: str, meta: dict, grid: list) -> list:
+    """Normalize inbound UI grid to the model token space as a flat list of ints per task."""
     arr = np.array(grid)
     if arr.ndim == 1:
         side = int(np.sqrt(arr.size))
@@ -286,6 +299,7 @@ def _format_grid_for_task(task: str, meta: dict, grid: list) -> list:
     return arr.astype(int).tolist()
 
 def _postprocess_preds_for_task(task: str, meta: dict, pred_tokens_1d: list[int]) -> list[list[int]]:
+    """Map model token predictions back to UI grid for the given task (2D square int grid)."""
     arr = np.array(pred_tokens_1d)
     side = int(np.sqrt(arr.size))
     arr = arr.reshape(side, side)
@@ -304,6 +318,14 @@ def predict_realtime(
     task_q: str | None = Query(default=None, alias="task"),
     model_q: str | None = Query(default=None, alias="model"),
 ):
+    """Realtime prediction.
+
+    Accepts task/model/grid via JSON body or query parameters and returns a JSON
+    payload with normalized input, solved grid, and ACT inference steps.
+    - task: "maze" or "sudoku" (default: maze)
+    - model: for sudoku: "mlp" or "attn"; ignored for maze
+    - grid: 2D square list or flat list of ints (0 = empty for sudoku)
+    """
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -575,7 +597,6 @@ def _do_prepare_dataset(include_maze: bool,
     return {"status": "Datasets prepared", "maze": include_maze, "sudoku": include_sudoku, "sudoku_output_dir": sudoku_output_dir}
 
 
-## Removed _do_download_sudoku_weights and _do_download_all_weights; handled in bootstrap
 
 
 def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 16, one_batch: bool = False):
@@ -664,7 +685,6 @@ def _do_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
     if not os.path.isdir(dataset_dir):
         print("WARNING: Maze dataset folder not found at", dataset_dir)
 
-    # subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     parent = os.path.join(repo_dir, "out", "maze", "default")
     os.makedirs(parent, exist_ok=True)
     run_id = time.strftime("%Y%m%d-%H%M%S")
@@ -737,7 +757,6 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     local_out = os.path.join(repo_dir, out_dir)
     os.makedirs(local_out, exist_ok=True)
     
-    # Build command to run evaluation with torchrun on both GPUs
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
@@ -754,7 +773,6 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     return {"status": "Evaluation completed", "output_dir": local_out, "result": result}
 
-## Removed download_weights endpoint; weights handled in _bootstrap_repo_and_weights
 
 # @app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
@@ -784,9 +802,6 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     # Set output dir
     local_out = os.path.join(repo_dir, out_dir)
     os.makedirs(local_out, exist_ok=True)
-    # shutil.move("scripts/run_eval_only.py", "./")
-    # subprocess.run(["mv", "scripts/run_eval_only.py", "../"], stdout=sys.stdout, stderr=sys.stderr, check=True)
-    # subprocess.run(["ls", "data", "maze-30x30-hard-1k"], stdout=sys.stdout, stderr=sys.stderr, check=True)
     # Run evaluation using subprocess with torchrun for multi-GPU
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
@@ -805,7 +820,6 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
 
     metrics = {}  # No metrics returned from subprocess
 
-    # Return results
     return {'message': 'Evaluation completed', 'output_dir': out_dir}
 
 
@@ -818,7 +832,6 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
     safe_task = _safe_name(task or "maze")
     if safe_task not in ("maze", "sudoku"):
         raise HTTPException(status_code=400, detail="task must be 'maze' or 'sudoku'")
-    # Maze has a single model; enforce
     if safe_task == "maze":
         if model not in (None, "", "default"):
             raise HTTPException(status_code=400, detail="maze has a single model; omit 'model' or use model=default")
@@ -1090,11 +1103,7 @@ def predict_job(grid: object = None, index: int | None = None, file: str | None 
     return _do_predict(grid=grid, index=index, file=file, task=task, model=model, run=run)
 
 
-## Removed download_sudoku_weights_job; handled in _bootstrap_repo_and_weights
-
-
-## Removed download_sudoku_weights endpoint; handled in _bootstrap_repo_and_weights
-
+ 
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
 def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
@@ -1135,11 +1144,7 @@ def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_s
     return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
 
 
-## Removed download_all_weights_job; handled in _bootstrap_repo_and_weights
-
-
-## Removed download_all_weights endpoint; handled in _bootstrap_repo_and_weights
-
+ 
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
 def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
@@ -1159,7 +1164,7 @@ def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
     run_id = time.strftime("%Y%m%d-%H%M%S")
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
-    # subprocess.run(["ls"], stdout=sys.stdout, stderr=sys.stderr, check=False)
+    
     eval_script = _get_eval_script_path(repo_dir)
     # Detect if eval script supports --one-batch
     supports_one_batch = False
