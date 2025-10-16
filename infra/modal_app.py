@@ -766,6 +766,7 @@ def predict(
     task_q: str | None = Query(default=None, alias="task"),
     model_q: str | None = Query(default=None, alias="model"),
     run_q: str | None = Query(default=None, alias="run"),
+    grid_q: str | None = Query(default=None, alias="grid"),
 ):
     """Webhook: Predict solved grid from inputs or saved eval outputs."""
     # Always include permissive CORS headers so visualizers on a different Modal subdomain can fetch this endpoint.
@@ -779,7 +780,8 @@ def predict(
         eff_task = task if task is not None else task_q
         eff_model = model if model is not None else model_q
         eff_run = run if run is not None else run_q
-        payload = _do_predict(grid=grid, index=index, file=file, task=eff_task, model=eff_model, run=eff_run)
+        eff_grid = grid if grid is not None else grid_q
+        payload = _do_predict(grid=eff_grid, index=index, file=file, task=eff_task, model=eff_model, run=eff_run)
         return JSONResponse(content=payload, headers=headers)
     except HTTPException as e:
         # Ensure CORS headers are present even on errors (e.g., 404, 400) so the browser surfaces the JSON.

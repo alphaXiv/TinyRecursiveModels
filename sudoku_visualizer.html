@@ -223,12 +223,24 @@
       if (!PREDICT_URL) throw new Error('Predict URL is empty');
       if (!raw) throw new Error('Paste an input grid JSON');
       const body = { grid: JSON.parse(raw), task, model };
-      const resp = await fetch(PREDICT_URL, {
+      let resp = await fetch(PREDICT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!resp.ok) throw new Error('Server returned HTTP ' + resp.status);
+      if (!resp.ok) {
+        // Fallback: some deployments may only allow GET; retry with grid in query string
+        if (resp.status === 405) {
+          const url = new URL(PREDICT_URL);
+          url.searchParams.set('task', task);
+          if (model) url.searchParams.set('model', model);
+          url.searchParams.set('grid', JSON.stringify(body.grid));
+          resp = await fetch(url.toString(), { method: 'GET' });
+          if (!resp.ok) throw new Error('Server returned HTTP ' + resp.status + ' (fallback GET)');
+        } else {
+          throw new Error('Server returned HTTP ' + resp.status);
+        }
+      }
       const data = await resp.json();
       if (!data || !('solved_maze' in data) || !('input_maze' in data)) throw new Error('Missing fields in response');
       const holder = document.getElementById('canvasHolder');
