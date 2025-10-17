@@ -597,7 +597,12 @@ def _do_prepare_dataset(include_maze: bool,
 
 
 
-def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 16, one_batch: bool = False):
+def _do_run_eval_sudoku(model: str,
+                        dataset_path: str | None,
+                        batch_size: int = 16,
+                        one_batch: bool = False,
+                        repeats: int = 1,
+                        seed_start: int = 0):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     # Use pre-downloaded weights (set by prepare step)
@@ -641,6 +646,10 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    if repeats and int(repeats) > 1:
+        cmd.extend(["--repeats", str(int(repeats))])
+        if seed_start:
+            cmd.extend(["--seed-start", str(int(seed_start))])
     if one_batch:
         cmd.append("--one-batch")
 
@@ -674,7 +683,10 @@ def _do_run_eval_sudoku(model: str, dataset_path: str | None, batch_size: int = 
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
-def _do_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
+def _do_run_eval_maze(batch_size: int = 256,
+                      one_batch: bool = False,
+                      repeats: int = 1,
+                      seed_start: int = 0):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     # Use pre-downloaded weights
@@ -700,6 +712,10 @@ def _do_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    if repeats and int(repeats) > 1:
+        cmd.extend(["--repeats", str(int(repeats))])
+        if seed_start:
+            cmd.extend(["--seed-start", str(int(seed_start))])
     if one_batch:
         cmd.append("--one-batch")
     print("Running Maze eval:", " ".join(cmd))
@@ -743,7 +759,7 @@ def prepare_dataset(include_maze: bool = True,
 
 @app.function(image=IMAGE, timeout=3600, gpu="A100:2",volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out", batch_size: int = 64):
+def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out", batch_size: int = 256):
     """Run evaluation on the mounted test dataset and save predictions to persistent volume.
 
     This will raise on any failure (no fallback behavior) as requested.
@@ -774,7 +790,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
 
 # @app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
 @modal.fastapi_endpoint(docs=True)
-def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out", batch_size: int = 64):
+def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out", batch_size: int = 256):
     """Run evaluation locally on mounted repo data.
 
     Args:
@@ -1104,7 +1120,12 @@ def predict_job(grid: object = None, index: int | None = None, file: str | None 
  
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
-def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
+def run_eval_sudoku_job(model: str = "mlp",
+                        dataset_path: str | None = None,
+                        batch_size: int = 256,
+                        one_batch: bool = False,
+                        repeats: int = 1,
+                        seed_start: int = 0):
     """Job: Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
@@ -1132,20 +1153,28 @@ def run_eval_sudoku_job(model: str = "mlp", dataset_path: str | None = None, bat
     os.makedirs(out_dir, exist_ok=True)
 
     # Delegate to internal helper that handles MLP arch override and flags
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
+def run_eval_sudoku(model: str = "mlp",
+                    dataset_path: str | None = None,
+                    batch_size: int = 256,
+                    one_batch: bool = False,
+                    repeats: int = 1,
+                    seed_start: int = 0):
     """Webhook: delegates to GPU-backed job function to ensure NCCL has GPUs."""
-    return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
+    return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)
 
 
  
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
-def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
+def run_eval_maze_job(batch_size: int = 256,
+                      one_batch: bool = False,
+                      repeats: int = 1,
+                      seed_start: int = 0):
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
@@ -1194,113 +1223,12 @@ def run_eval_maze_job(batch_size: int = 64, one_batch: bool = False):
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
-def run_eval_maze(batch_size: int = 64, one_batch: bool = False):
+def run_eval_maze(batch_size: int = 256,
+                  one_batch: bool = False,
+                  repeats: int = 1,
+                  seed_start: int = 0):
     """Webhook: delegates to GPU-backed job function to ensure NCCL has GPUs."""
-    return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)
-
-
-@app.function(image=IMAGE, volumes={"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def list_runs(task: str = "maze", model: str | None = None):
-    """List available runs under out/<task>/<model>. For maze, model is always 'default'."""
-    repo_dir = _ensure_repo()
-    base_out = os.path.join(repo_dir, "out")
-    safe_task = _safe_name(task)
-    if safe_task not in ("maze", "sudoku"):
-        raise HTTPException(status_code=400, detail="task must be 'maze' or 'sudoku'")
-    if safe_task == "maze":
-        safe_model = "default"
-    else:
-        safe_model = _safe_name(model or "mlp")
-        if safe_model not in ("mlp", "attn"):
-            raise HTTPException(status_code=400, detail="For sudoku, model must be 'mlp' or 'attn'")
-    parent = os.path.join(base_out, safe_task, safe_model)
-    if not os.path.isdir(parent):
-        return {"runs": []}
-    entries = []
-    for d in os.listdir(parent):
-        p = os.path.join(parent, d)
-        if os.path.isdir(p) and d != "latest":
-            entries.append({"name": d, "mtime": os.path.getmtime(p)})
-    entries.sort(key=lambda e: e["mtime"], reverse=True)
-    latest = None
-    if os.path.islink(os.path.join(parent, "latest")):
-        latest = os.readlink(os.path.join(parent, "latest"))
-    return {"task": safe_task, "model": safe_model, "parent": parent, "latest": latest, "runs": entries}
-
-
-@app.function(image=IMAGE, volumes={"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def list_custom(task: str = "maze", model: str | None = None):
-    """List saved custom I/O→O/P samples under out/<task>/<model>/custom."""
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization"
-    }
-    repo_dir = _ensure_repo()
-    base_out = os.path.join(repo_dir, "out")
-    safe_task = _safe_name(task)
-    if safe_task not in ("maze", "sudoku"):
-        return JSONResponse(content={"detail": "task must be 'maze' or 'sudoku'"}, status_code=400, headers=headers)
-    if safe_task == "maze":
-        safe_model = "default"
-    else:
-        safe_model = _safe_name(model or "mlp")
-        if safe_model not in ("mlp", "attn"):
-            return JSONResponse(content={"detail": "For sudoku, model must be 'mlp' or 'attn'"}, status_code=400, headers=headers)
-    custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
-    if not os.path.isdir(custom_dir):
-        return JSONResponse(content={"items": []}, headers=headers)
-    items = []
-    for fname in os.listdir(custom_dir):
-        if not fname.endswith('.json'):
-            continue
-        fpath = os.path.join(custom_dir, fname)
-        try:
-            mtime = os.path.getmtime(fpath)
-        except Exception:
-            mtime = 0
-        items.append({"name": fname, "mtime": mtime})
-    items.sort(key=lambda e: e["mtime"], reverse=True)
-    return JSONResponse(content={"task": safe_task, "model": safe_model, "dir": custom_dir, "items": items}, headers=headers)
-
-
-@app.function(image=IMAGE, volumes={"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def get_custom(task: str = "maze", model: str | None = None, name: str | None = None):
-    """Fetch a saved custom sample by filename and return it for visualization."""
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization"
-    }
-    if not name:
-        return JSONResponse(content={"detail": "name is required"}, status_code=400, headers=headers)
-    repo_dir = _ensure_repo()
-    base_out = os.path.join(repo_dir, "out")
-    safe_task = _safe_name(task)
-    if safe_task not in ("maze", "sudoku"):
-        return JSONResponse(content={"detail": "task must be 'maze' or 'sudoku'"}, status_code=400, headers=headers)
-    if safe_task == "maze":
-        safe_model = "default"
-    else:
-        safe_model = _safe_name(model or "mlp")
-        if safe_model not in ("mlp", "attn"):
-            return JSONResponse(content={"detail": "For sudoku, model must be 'mlp' or 'attn'"}, status_code=400, headers=headers)
-    custom_dir = os.path.join(base_out, safe_task, safe_model, "custom")
-    try:
-        candidate = os.path.realpath(os.path.join(custom_dir, name))
-        if not candidate.startswith(os.path.realpath(custom_dir) + os.sep):
-            return JSONResponse(content={"detail": "invalid name"}, status_code=400, headers=headers)
-        if not os.path.exists(candidate):
-            return JSONResponse(content={"detail": "not found"}, status_code=404, headers=headers)
-        with open(candidate, 'r', encoding='utf-8') as f:
-            data = _json.load(f)
-        # Always include CORS
-        return JSONResponse(content=data, headers=headers)
-    except Exception as e:
-        return JSONResponse(content={"detail": str(e)}, status_code=500, headers=headers)
+    return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)
 
 
 @app.function(volumes={"/data": volume})
@@ -1330,23 +1258,6 @@ def get_sudoku_visualizer():
 
     if not os.path.exists(html_path):
         raise FileNotFoundError(f"Sudoku visualizer HTML not found at {html_path}; ensure repo is cloned")
-
-    with open(html_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    return Response(content, media_type="text/html")
-
-
-@app.function(volumes={"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def get_unified_visualizer():
-    """Serve the unified visualizer HTML (task/model/run switcher)."""
-    repo_dir = _ensure_repo()
-    os.chdir(repo_dir)
-    html_path = os.path.join(repo_dir, "unified_visualizer.html")
-
-    if not os.path.exists(html_path):
-        raise FileNotFoundError(f"Unified visualizer HTML not found at {html_path}; ensure repo is cloned")
 
     with open(html_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1408,20 +1319,36 @@ def cli_prepare_dataset(include_maze: bool = True,
 
 
 @app.local_entrypoint()
-def cli_run_eval_maze(batch_size: int = 64, one_batch: bool = False):
-    """Local entrypoint: trigger Maze evaluation."""
-    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)  # type: ignore
+def cli_run_eval_maze(batch_size: int = 256,
+                      one_batch: bool = False,
+                      repeats: int = 1,
+                      seed_start: int = 0,
+                      eval_only: bool = True):
+    """Local entrypoint: trigger Maze evaluation.
+
+    Note: eval-only is always enforced internally; this flag is accepted for CLI
+    compatibility and ignored (subprocess adds --eval-only regardless).
+    """
+    _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
+    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)  # type: ignore
     print(res)
 
 
 @app.local_entrypoint()
-def cli_run_eval_sudoku(model: str = "mlp", dataset_path: str | None = None, batch_size: int = 64, one_batch: bool = False):
-    """Local entrypoint: trigger Sudoku evaluation.
-    Example:
-      modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
+def cli_run_eval_sudoku(model: str = "mlp",
+                                                dataset_path: str | None = None,
+                                                batch_size: int = 256,
+                                                one_batch: bool = False,
+                                                repeats: int = 1,
+                                                seed_start: int = 0,
+                                                eval_only: bool = True):
+        """Local entrypoint: trigger Sudoku evaluation.
+        Example:
+        modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
     """
-    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
-    print(res)
+        _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
+        res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)  # type: ignore
+        print(res)
 
 
 @app.local_entrypoint()

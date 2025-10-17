@@ -287,15 +287,42 @@ def main():
 
     # After all repeats, print aggregate stats (rank 0)
     if RANK == 0 and args.repeats > 1:
-        
+
+        def _tcrit_975(df: int) -> float:
+            # Small table for two-tailed 95% confidence, upper 97.5% point
+            table = {
+                1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+                6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+                11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131,
+                16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+                21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+                26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
+            }
+            if df <= 0:
+                return float('nan')
+            if df in table:
+                return table[df]
+            # Normal approximation for large df
+            return 1.959964
+
         print('\nAggregate metrics across repeats:')
         for set_name, metrics_dict in metric_acc.items():
             print(f"Set: {set_name}")
             for key, vals in metrics_dict.items():
                 arr = np.array(vals, dtype=float)
+                n = len(vals)
                 mean = float(arr.mean())
-                std = float(arr.std(ddof=0))
-                print(f"  {key}: mean={mean:.6f}, std={std:.6f} (n={len(vals)})")
+                std_pop = float(arr.std(ddof=0))
+                # Use sample std for CI
+                std_samp = float(arr.std(ddof=1)) if n >= 2 else float('nan')
+                # t critical
+                tcrit = _tcrit_975(n - 1) if n >= 2 else float('nan')
+                margin = tcrit * std_samp / np.sqrt(n) if n >= 2 else float('nan')
+                lo = mean - margin if n >= 2 else float('nan')
+                hi = mean + margin if n >= 2 else float('nan')
+                print(f"  {key}: mean={mean:.6f}, std={std_pop:.6f} (n={n})")
+                if n >= 2:
+                    print(f"    95% CI (t, df={n-1}): [{lo:.6f}, {hi:.6f}]  (margin={margin:.6f})")
 
 
 if __name__ == '__main__':
