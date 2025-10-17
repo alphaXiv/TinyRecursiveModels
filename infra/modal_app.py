@@ -647,6 +647,9 @@ def _do_run_eval_sudoku(model: str,
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    # Ensure repo root is on PYTHONPATH so imports like `from models...` resolve when script lives under scripts/
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
     if repeats and int(repeats) > 1:
         cmd.extend(["--repeats", str(int(repeats))])
         if seed_start:
@@ -670,7 +673,7 @@ def _do_run_eval_sudoku(model: str,
             with open(trm_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(data, f, sort_keys=False)
         print("Running Sudoku eval:", " ".join(cmd))
-        result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+        result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
     finally:
         # Restore original arch file if we swapped it
         if need_mlp and os.path.exists(backup_path):
@@ -713,6 +716,9 @@ def _do_run_eval_maze(batch_size: int = 256,
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
+    # Ensure repo root is on PYTHONPATH so imports like `from models...` resolve when script lives under scripts/
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
     if repeats and int(repeats) > 1:
         cmd.extend(["--repeats", str(int(repeats))])
         if seed_start:
@@ -720,7 +726,7 @@ def _do_run_eval_maze(batch_size: int = 256,
     if one_batch:
         cmd.append("--one-batch")
     print("Running Maze eval:", " ".join(cmd))
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
     _symlink_latest(parent, out_dir)
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
