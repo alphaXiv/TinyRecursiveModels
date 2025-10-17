@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 """Distributed evaluation runner that reuses pretrain.py evaluate() behavior.
 
 This script constructs a PretrainConfig from a YAML file (default: config/cfg_pretrain.yaml),
@@ -21,6 +21,12 @@ import torch
 import torch.distributed as dist
 import numpy as np
 from typing import Any, Dict, Mapping, cast
+from contextlib import nullcontext
+import torch.backends.cudnn as cudnn
+from hydra import initialize, compose
+from omegaconf import OmegaConf
+from models.ema import EMAHelper
+
 # Reuse functions and classes from pretrain.py
 from pretrain import (
     create_dataloader,
@@ -32,6 +38,14 @@ from pretrain import (
 
 
 def parse_args():
+    """Parse CLI arguments for the evaluation runner.
+
+    Returns:
+        argparse.Namespace with config path, checkpoint, dataset path, output
+        directory, eval outputs to save, batch size override, EMA options,
+        number of repeats, seeding, eval-only toggle, bf16 toggle, and
+        one-batch mode.
+    """
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='config/cfg_pretrain.yaml', help='YAML config file (pydantic fields)')
     p.add_argument('--checkpoint', required=True, help='Path to model checkpoint file to load')
@@ -50,9 +64,18 @@ def parse_args():
 
 
 def main():
+    """Entry point for running evaluation with optional distribution/EMA.
+
+    Steps:
+    - Initialize distributed context (if under torchrun)
+    - Compose and broadcast config
+    - Build dataloader(s), model, and optional EMA copy
+    - Run evaluation repeats with optional bf16 autocast
+    - Aggregate metrics across repeats (rank 0)
+    """
     args = parse_args()
 
-    # Distributed init if running under torchrun
+    # Distributed init (if running under torchrun)
     RANK = 0
     WORLD_SIZE = 1
     CPU_GROUP = None
@@ -64,28 +87,26 @@ def main():
         torch.cuda.set_device(int(os.environ['LOCAL_RANK']))
         CPU_GROUP = dist.new_group(backend='gloo')
 
-    # Compose config using Hydra programmatic API on rank 0 and broadcast
-    from hydra import initialize, compose
-    from omegaconf import OmegaConf
+    # Compose config via Hydra on rank 0 and broadcast
 
     config_obj = None
     objects = [None]
     if RANK == 0:
-        # Determine config directory and base name from args.config (e.g. 'config/cfg_pretrain.yaml')
+    # Derive config directory and base name from args.config
         config_path = os.path.dirname(args.config) or 'config'
         config_name = os.path.splitext(os.path.basename(args.config))[0]
 
-        # Compose Hydra config; do not apply CLI overrides here (we'll apply programmatic overrides below)
+    # Compose Hydra config; CLI overrides applied programmatically below
         with initialize(config_path=config_path, job_name="run_eval_only"):
             hydra_cfg = compose(config_name=config_name)
 
-        # Convert to plain dict (resolve interpolations)
+    # Convert to plain dict (resolve interpolations)
         cfg_any = OmegaConf.to_container(hydra_cfg, resolve=True)
         if not isinstance(cfg_any, dict):
             raise RuntimeError('Composed config is not a mapping after OmegaConf.to_container')
         cfg: Dict[str, Any] = dict(cast(Mapping[str, Any], cfg_any))
 
-        # Apply CLI overrides on top of the composed config
+    # Apply programmatic overrides
         cfg['data_paths_test'] = [args.dataset]
         cfg['load_checkpoint'] = args.checkpoint
         if args.outdir is not None:
@@ -94,14 +115,14 @@ def main():
             cfg['global_batch_size'] = args.global_batch_size
         cfg['eval_save_outputs'] = args.eval_save_outputs
 
-        # Print the final composed config on rank 0 for debugging
+    # Print composed config on rank 0
         try:
             print('\nComposed config (after Hydra compose + CLI overrides):')
             print(yaml.safe_dump(cfg, sort_keys=False))
         except Exception:
             print('Warning: failed to pretty-print composed config')
 
-        # Construct pydantic PretrainConfig from fully composed config
+    # Build pydantic PretrainConfig
         config_obj = PretrainConfig(**cfg)
         objects = [config_obj]
 
@@ -116,9 +137,8 @@ def main():
 
     # Seed RNGs
     torch.random.manual_seed(config.seed + RANK)
-    # Allow cuDNN to pick fastest algorithms (can speed up eval)
+    # Let cuDNN pick fastest algorithms
     try:
-        import torch.backends.cudnn as cudnn
         cudnn.benchmark = True
     except Exception:
         pass
@@ -126,8 +146,7 @@ def main():
     # Create dataloaders
     try:
         if args.one_batch:
-            # For a random batch: use the training-style sampler on the test split (random across groups)
-            # and then take just the first yielded batch.
+            # one-batch: take a single random batch from test split
             eval_loader_full, eval_metadata = create_dataloader(
                 config, 'test', rank=RANK, world_size=WORLD_SIZE,
                 test_set_mode=False, epochs_per_iter=1, global_batch_size=config.global_batch_size
@@ -144,6 +163,7 @@ def main():
                 print('one-batch mode: evaluating a single random batch from test split')
 
             def one_batch_iter():
+                """Yield exactly one pre-fetched batch for quick smoke tests."""
                 yield first
 
             eval_loader = one_batch_iter()
@@ -157,7 +177,7 @@ def main():
             print('NO EVAL DATA FOUND')
         return
 
-    # No subset limiting: evaluate using the configured global batch size across the full test set
+    # Evaluate full test set unless one-batch is specified
 
     # Evaluators
     try:
@@ -174,8 +194,6 @@ def main():
     # Optionally switch to EMA copy if requested by CLI or config
     train_state_eval = train_state
     if args.apply_ema or config.ema:
-        # Import EMA helper
-        from models.ema import EMAHelper
 
         if RANK == 0:
             print('Preparing EMA for evaluation...')
@@ -237,17 +255,15 @@ def main():
         metrics = None
         use_cuda = torch.cuda.is_available()
         if args.bf16 and use_cuda:
-            from contextlib import nullcontext
             amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
         else:
-            from contextlib import nullcontext
             amp_ctx = nullcontext()
 
         with torch.inference_mode(), amp_ctx:
             metrics = evaluate(
                 config=config,
                 train_state=ts,
-                eval_loader=eval_loader,
+                eval_loader=cast(Any, eval_loader),
                 eval_metadata=eval_metadata,
                 evaluators=evaluators,
                 rank=RANK,
