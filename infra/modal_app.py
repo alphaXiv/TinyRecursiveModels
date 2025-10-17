@@ -13,8 +13,6 @@ import sys
 import subprocess
 import shutil
 import threading
-import types
-import json
 import json as _json
 import time
 import uuid
@@ -156,27 +154,27 @@ def _load_checkpoint_compat(model, ckpt_path: str):
 
     sd = preprocess_state_dict_keys(sd)
 
-    # Resize puzzle embedding if shape mismatch (handle both presence/absence of prefix in ckpt)
-    try:
-        expected = model.model.inner.puzzle_emb.weights.shape  # type: ignore[attr-defined]
-        candidates = [
-            "model.inner.puzzle_emb.weights",
-            "_orig_mod.model.inner.puzzle_emb.weights",
-            "module.model.inner.puzzle_emb.weights",
-        ]
-        name_in_sd = next((n for n in candidates if n in sd), None)
-        if name_in_sd is not None and getattr(sd[name_in_sd], 'shape', None) != expected:
-            pe = sd[name_in_sd]
-            sd[name_in_sd] = (pe.mean(dim=0, keepdim=True).expand(expected).contiguous())
-    except Exception:
-        pass
+    # # Resize puzzle embedding if shape mismatch (handle both presence/absence of prefix in ckpt)
+    # try:
+    #     expected = model.model.inner.puzzle_emb.weights.shape  # type: ignore[attr-defined]
+    #     candidates = [
+    #         "model.inner.puzzle_emb.weights",
+    #         "_orig_mod.model.inner.puzzle_emb.weights",
+    #         "module.model.inner.puzzle_emb.weights",
+    #     ]
+    #     name_in_sd = next((n for n in candidates if n in sd), None)
+    #     if name_in_sd is not None and getattr(sd[name_in_sd], 'shape', None) != expected:
+    #         pe = sd[name_in_sd]
+    #         sd[name_in_sd] = (pe.mean(dim=0, keepdim=True).expand(expected).contiguous())
+    # except Exception:
+    #     pass
 
     # Load non-strict to tolerate benign missing buffers/keys after normalization
-    try:
-        incompat = model.load_state_dict(sd, strict=True)
-    except TypeError:
+    # try:
+    incompat = model.load_state_dict(sd, strict=True)
+    # except TypeError:
         # Older torch without strict kw?
-        incompat = model.load_state_dict(sd)  # type: ignore[assignment]
+        # incompat = model.load_state_dict(sd)  # type: ignore[assignment]
     # Best-effort visibility for debugging: log key mismatches (does not raise)
     try:
         missing = getattr(incompat, "missing_keys", [])
