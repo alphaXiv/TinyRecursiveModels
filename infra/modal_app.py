@@ -628,9 +628,8 @@ def _do_run_eval_sudoku(model: str,
     os.makedirs(out_dir, exist_ok=True)
 
     # Choose arch override for MLP vs attention by temporarily swapping arch file
-    # Hydra.initialize requires config_path to be relative to the current working directory.
-    # We chdir(repo_dir) above, so pass a relative path here.
-    config_path = "config/cfg_pretrain.yaml"
+    # Provide ABSOLUTE config path so Hydra can always resolve it correctly regardless of script location
+    config_path = os.path.join(repo_dir, "config", "cfg_pretrain.yaml")
     arch_dir = os.path.join(repo_dir, "config", "arch")
     trm_path = os.path.join(arch_dir, "trm.yaml")
     backup_path = os.path.join(arch_dir, "trm.yaml.bak")
@@ -708,6 +707,7 @@ def _do_run_eval_maze(batch_size: int = 256,
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        "--config", os.path.join(repo_dir, "config", "cfg_pretrain.yaml"),
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -781,6 +781,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        "--config", os.path.join(repo_dir, "config", "cfg_pretrain.yaml"),
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -791,7 +792,9 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     ]
     print(f"Running evaluation command: {' '.join(cmd)}")
     # Run and raise on failure
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
     return {"status": "Evaluation completed", "output_dir": local_out, "result": result}
 
 
@@ -827,6 +830,7 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        "--config", os.path.join(repo_dir, "config", "cfg_pretrain.yaml"),
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -836,7 +840,9 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
         "--global-batch-size", str(int(batch_size)),
     ]
     print(f"Running command: {' '.join(cmd)}")
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
     print("Evaluation completed.")
 
     metrics = {}  # No metrics returned from subprocess
