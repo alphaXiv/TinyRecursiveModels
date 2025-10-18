@@ -14,6 +14,8 @@ Example (distributed via torchrun):
 """
 
 import os
+import json
+import sys
 import argparse
 import yaml
 import copy
@@ -52,11 +54,16 @@ def parse_args():
     p.add_argument('--outdir', default=None, help='Directory to save evaluation preds (overrides checkpoint_path in config)')
     p.add_argument('--eval-save-outputs', nargs='+', default=['inputs','labels','puzzle_identifiers','preds'], help='List of keys to save during evaluation')
     p.add_argument('--global-batch-size', type=int, default=None, help='Global batch size override for evaluation')
-    p.add_argument('--apply-ema', action='store_true', help='Attempt to apply EMA weights for evaluation')
+    # Defaults: eval-only, bf16, and apply-ema are enabled unless explicitly disabled
+    p.add_argument('--apply-ema', action='store_true', default=True, help='Apply EMA weights for evaluation (default: on). Use --no-apply-ema to disable')
     p.add_argument('--ema-shadow', default=None, help='Path to EMA shadow state dict (optional). If provided, it will be loaded into EMAHelper before applying EMA.')
         # repeats/seed-start removed: we evaluate exactly once per invocation
-    p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
-    p.add_argument('--bf16', action='store_true', help='Use CUDA autocast with bfloat16 during evaluation for faster inference on A100')
+    p.add_argument('--eval-only', action='store_true', default=True, help='Run in eval-only mode (skip optimizer creation). Default: on. Use --no-eval-only to disable')
+    p.add_argument('--bf16', action='store_true', default=True, help='Use CUDA autocast with bfloat16 during evaluation (default: on). Use --no-bf16 to disable')
+    # Negative toggles for convenience
+    p.add_argument('--no-apply-ema', dest='apply_ema', action='store_false', help='Disable EMA application during evaluation')
+    p.add_argument('--no-eval-only', dest='eval_only', action='store_false', help='Disable eval-only (will construct optimizer); not recommended')
+    p.add_argument('--no-bf16', dest='bf16', action='store_false', help='Disable bfloat16 autocast during evaluation')
     p.add_argument('--one-batch', action='store_true', help='Evaluate only a single random batch of size global_batch_size from the test split (faster smoke test).')
     return p.parse_args()
 
@@ -274,24 +281,26 @@ def main():
             half = z*math.sqrt((p*(1-p))/n + (z*z)/(4*n*n)) / denom
             return (max(0.0, center - half), min(1.0, center + half))
 
-        # Try to infer N from saved outputs in checkpoint_path
-        # Look for most recent file like step_*_all_preds.0
+        # Prefer N from dataset metadata (strict; no fallback)
         n_items = None
         n_tokens = None
+        # dataset.json (required)
+        ds_meta_path = os.path.join(args.dataset, 'test', 'dataset.json')
+        if not os.path.exists(ds_meta_path):
+            print(f"ERROR: Missing dataset metadata at {ds_meta_path}. Cannot compute Wilson CI without exact N.\nStrict mode: no fallback to saved outputs.")
+            sys.exit(2)
         try:
-            paths = sorted(glob(os.path.join(config.checkpoint_path, 'step_*_all_preds.*')), key=os.path.getmtime)
-            if len(paths):
-                latest = paths[-1]
-                saved = torch.load(latest, map_location='cpu')
-                if isinstance(saved, dict):
-                    if 'puzzle_identifiers' in saved and hasattr(saved['puzzle_identifiers'], 'shape'):
-                        n_items = int(saved['puzzle_identifiers'].shape[0])
-                    elif 'inputs' in saved and hasattr(saved['inputs'], 'shape'):
-                        n_items = int(saved['inputs'].shape[0])
-                    if 'inputs' in saved and hasattr(saved['inputs'], 'numel'):
-                        n_tokens = int(saved['inputs'].numel())
+            with open(ds_meta_path, 'r', encoding='utf-8') as f:
+                ds_meta = json.load(f)
+            if 'total_puzzles' in ds_meta and 'seq_len' in ds_meta:
+                n_items = int(ds_meta['total_puzzles'])
+                n_tokens = int(ds_meta['seq_len']) * n_items
+            else:
+                print(f"ERROR: dataset.json missing required fields 'total_puzzles' and/or 'seq_len'. Strict mode: cannot compute Wilson CI.")
+                sys.exit(2)
         except Exception as _e:
-            print(f"Note: Could not infer N from saved outputs: {_e}")
+            print(f"ERROR: Failed to read dataset meta for N: {_e}\nStrict mode: cannot compute Wilson CI.")
+            sys.exit(2)
 
         # Print Wilson CI for exact_accuracy (item-wise)
         try:
