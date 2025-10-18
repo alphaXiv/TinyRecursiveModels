@@ -43,8 +43,7 @@ def parse_args():
     Returns:
         argparse.Namespace with config path, checkpoint, dataset path, output
         directory, eval outputs to save, batch size override, EMA options,
-        number of repeats, seeding, eval-only toggle, bf16 toggle, and
-        one-batch mode.
+        eval-only toggle, bf16 toggle, and one-batch mode.
     """
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='config/cfg_pretrain.yaml', help='YAML config file (pydantic fields)')
@@ -55,15 +54,10 @@ def parse_args():
     p.add_argument('--global-batch-size', type=int, default=None, help='Global batch size override for evaluation')
     p.add_argument('--apply-ema', action='store_true', help='Attempt to apply EMA weights for evaluation')
     p.add_argument('--ema-shadow', default=None, help='Path to EMA shadow state dict (optional). If provided, it will be loaded into EMAHelper before applying EMA.')
-    p.add_argument('--repeats', type=int, default=1, help='Number of times to run evaluation (will save outputs per run)')
-    p.add_argument('--seed-start', type=int, default=0, help='Offset added to seed for each repeat (seed + seed-start + rep)')
+        # repeats/seed-start removed: we evaluate exactly once per invocation
     p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
     p.add_argument('--bf16', action='store_true', help='Use CUDA autocast with bfloat16 during evaluation for faster inference on A100')
     p.add_argument('--one-batch', action='store_true', help='Evaluate only a single random batch of size global_batch_size from the test split (faster smoke test).')
-    # Shuffle test batches to introduce eval-only randomness (does not affect pretraining)
-    p.add_argument('--shuffle-test', dest='shuffle_test', action='store_true', help='Shuffle test batches to introduce randomness across repeats (eval-only).')
-    p.add_argument('--no-shuffle-test', dest='shuffle_test', action='store_false', help='Disable test batch shuffling (deterministic order).')
-    p.set_defaults(shuffle_test=True)
     return p.parse_args()
 
 
@@ -74,8 +68,8 @@ def main():
     - Initialize distributed context (if under torchrun)
     - Compose and broadcast config
     - Build dataloader(s), model, and optional EMA copy
-    - Run evaluation repeats with optional bf16 autocast
-    - Aggregate metrics across repeats (rank 0)
+    - Run a single evaluation pass with optional bf16 autocast
+    - On rank 0, print metrics and per-run Wilson 95% CI for accuracy and exact_accuracy when possible
     """
     args = parse_args()
 
@@ -174,8 +168,7 @@ def main():
         else:
             eval_loader, eval_metadata = create_dataloader(
                 config, 'test', rank=RANK, world_size=WORLD_SIZE,
-                test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size,
-                shuffle_test=bool(args.shuffle_test)
+                test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size
             )
     except Exception:
         if RANK == 0:
@@ -233,101 +226,86 @@ def main():
                 print('No EMA shadow provided — assuming checkpoint contains EMA weights (if training saved EMA).')
             train_state_eval = copy.deepcopy(train_state)
 
-    # Run evaluation repeats
-    original_ckpt_path = config.checkpoint_path
-    # Prepare metric accumulators (only used on rank 0)
-    metric_acc = {}  # {set_name: {metric_name: [vals]}}
+    # Set checkpoint output directory and ensure it exists
+    if config.checkpoint_path is None:
+        config.checkpoint_path = os.path.join('checkpoints', 'eval_run')
+    if RANK == 0:
+        os.makedirs(config.checkpoint_path, exist_ok=True)
 
-    for rep in range(args.repeats):
-        # reseed per repeat
-        torch.random.manual_seed(config.seed + RANK + args.seed_start + rep)
+    # deepcopy eval state to avoid side-effects
+    ts = copy.deepcopy(train_state_eval)
+    ts.model.eval()
 
-        # create per-repeat checkpoint path so outputs don't clash
-        if original_ckpt_path is None:
-            rep_ckpt = os.path.join('checkpoints', f'eval_run_{rep}')
-        else:
-            rep_ckpt = original_ckpt_path + f'_run{rep}' if args.repeats > 1 else original_ckpt_path
-        config.checkpoint_path = rep_ckpt
-        if RANK == 0:
-            os.makedirs(config.checkpoint_path, exist_ok=True)
-            print(f"Starting evaluation run {rep+1}/{args.repeats}, outputs -> {config.checkpoint_path}")
+    # Evaluate with no grad; optionally enable bf16 autocast when requested and CUDA is available
+    metrics = None
+    use_cuda = torch.cuda.is_available()
+    if args.bf16 and use_cuda:
+        amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
+    else:
+        amp_ctx = nullcontext()
 
-        # deepcopy eval state to avoid side-effects
-        ts = copy.deepcopy(train_state_eval)
-        ts.model.eval()
-
-        # Evaluate with no grad; optionally enable bf16 autocast when requested and CUDA is available
-        metrics = None
-        use_cuda = torch.cuda.is_available()
-        if args.bf16 and use_cuda:
-            amp_ctx = torch.autocast(device_type='cuda', dtype=torch.bfloat16)
-        else:
-            amp_ctx = nullcontext()
-
-        with torch.inference_mode(), amp_ctx:
-            metrics = evaluate(
-                config=config,
-                train_state=ts,
-                eval_loader=cast(Any, eval_loader),
-                eval_metadata=eval_metadata,
-                evaluators=evaluators,
-                rank=RANK,
-                world_size=WORLD_SIZE,
-                cpu_group=CPU_GROUP,
-            )
-
-        if RANK == 0 and metrics is not None:
-            print(f'Run {rep+1} metrics:')
-            print(metrics)
-            # Accumulate metrics for final summary
-            m_dict = cast(dict, metrics)
-            for set_name, m in m_dict.items():
-                metric_acc.setdefault(set_name, {})
-                for key in ('accuracy', 'exact_accuracy'):
-                    if key in m:
-                        metric_acc[set_name].setdefault(key, []).append(m[key])
+    with torch.inference_mode(), amp_ctx:
+        metrics = evaluate(
+            config=config,
+            train_state=ts,
+            eval_loader=cast(Any, eval_loader),
+            eval_metadata=eval_metadata,
+            evaluators=evaluators,
+            rank=RANK,
+            world_size=WORLD_SIZE,
+            cpu_group=CPU_GROUP,
+        )
 
     if dist.is_initialized():
         dist.destroy_process_group()
 
-    # After all repeats, print aggregate stats (rank 0)
-    if RANK == 0 and args.repeats > 1:
+    # Rank 0: print metrics and Wilson CI if possible
+    if RANK == 0 and metrics is not None:
+        from glob import glob
+        import math
+        print('Run metrics:')
+        print(metrics)
 
-        def _tcrit_975(df: int) -> float:
-            # Small table for two-tailed 95% confidence, upper 97.5% point
-            table = {
-                1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
-                6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
-                11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131,
-                16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
-                21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
-                26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
-            }
-            if df <= 0:
-                return float('nan')
-            if df in table:
-                return table[df]
-            # Normal approximation for large df
-            return 1.959964
+        def wilson_ci(p: float, n: int, z: float = 1.96) -> tuple[float,float]:
+            if n <= 0:
+                return (float('nan'), float('nan'))
+            denom = 1.0 + (z*z)/n
+            center = (p + (z*z)/(2*n)) / denom
+            half = z*math.sqrt((p*(1-p))/n + (z*z)/(4*n*n)) / denom
+            return (max(0.0, center - half), min(1.0, center + half))
 
-        print('\nAggregate metrics across repeats:')
-        for set_name, metrics_dict in metric_acc.items():
-            print(f"Set: {set_name}")
-            for key, vals in metrics_dict.items():
-                arr = np.array(vals, dtype=float)
-                n = len(vals)
-                mean = float(arr.mean())
-                std_pop = float(arr.std(ddof=0))
-                # Use sample std for CI
-                std_samp = float(arr.std(ddof=1)) if n >= 2 else float('nan')
-                # t critical
-                tcrit = _tcrit_975(n - 1) if n >= 2 else float('nan')
-                margin = tcrit * std_samp / np.sqrt(n) if n >= 2 else float('nan')
-                lo = mean - margin if n >= 2 else float('nan')
-                hi = mean + margin if n >= 2 else float('nan')
-                print(f"  {key}: mean={mean:.6f}, std={std_pop:.6f} (n={n})")
-                if n >= 2:
-                    print(f"    95% CI (t, df={n-1}): [{lo:.6f}, {hi:.6f}]  (margin={margin:.6f})")
+        # Try to infer N from saved outputs in checkpoint_path
+        # Look for most recent file like step_*_all_preds.0
+        n_items = None
+        n_tokens = None
+        try:
+            paths = sorted(glob(os.path.join(config.checkpoint_path, 'step_*_all_preds.*')), key=os.path.getmtime)
+            if len(paths):
+                latest = paths[-1]
+                saved = torch.load(latest, map_location='cpu')
+                if isinstance(saved, dict):
+                    if 'puzzle_identifiers' in saved and hasattr(saved['puzzle_identifiers'], 'shape'):
+                        n_items = int(saved['puzzle_identifiers'].shape[0])
+                    elif 'inputs' in saved and hasattr(saved['inputs'], 'shape'):
+                        n_items = int(saved['inputs'].shape[0])
+                    if 'inputs' in saved and hasattr(saved['inputs'], 'numel'):
+                        n_tokens = int(saved['inputs'].numel())
+        except Exception as _e:
+            print(f"Note: Could not infer N from saved outputs: {_e}")
+
+        # Print Wilson CI for exact_accuracy (item-wise)
+        try:
+            for set_name, m in cast(dict, metrics).items():
+                if isinstance(m, dict) and 'exact_accuracy' in m and n_items:
+                    p = float(m['exact_accuracy'])
+                    lb, ub = wilson_ci(p, n_items)
+                    print(f"  {set_name}.exact_accuracy 95% Wilson CI [{lb*100:.2f}%, {ub*100:.2f}%] (N={n_items})")
+                if isinstance(m, dict) and 'accuracy' in m and n_tokens:
+                    p = float(m['accuracy'])
+                    lb, ub = wilson_ci(p, n_tokens)
+                    print(f"  {set_name}.accuracy 95% Wilson CI [{lb*100:.2f}%, {ub*100:.2f}%] (N={n_tokens})")
+        except Exception as _e:
+            print(f"Note: Failed to compute Wilson CI: {_e}")
 
 
 if __name__ == '__main__':

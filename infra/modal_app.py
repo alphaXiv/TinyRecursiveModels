@@ -600,10 +600,7 @@ def _do_prepare_dataset(include_maze: bool,
 def _do_run_eval_sudoku(model: str,
                         dataset_path: str | None,
                         batch_size: int = 16,
-                        one_batch: bool = False,
-                        repeats: int = 1,
-                        seed_start: int = 0,
-                        shuffle_test: bool = True):
+                        one_batch: bool = False):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     # Use pre-downloaded weights (set by prepare step)
@@ -647,17 +644,8 @@ def _do_run_eval_sudoku(model: str,
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
-    if repeats and int(repeats) > 1:
-        cmd.extend(["--repeats", str(int(repeats))])
-        if seed_start:
-            cmd.extend(["--seed-start", str(int(seed_start))])
     if one_batch:
         cmd.append("--one-batch")
-    # Forward shuffle-test flag (enabled by default)
-    if bool(shuffle_test):
-        cmd.append("--shuffle-test")
-    else:
-        cmd.append("--no-shuffle-test")
 
     need_mlp = (model or "mlp").lower() == "mlp"
     restored = False
@@ -690,10 +678,7 @@ def _do_run_eval_sudoku(model: str,
 
 
 def _do_run_eval_maze(batch_size: int = 256,
-                      one_batch: bool = False,
-                      repeats: int = 1,
-                      seed_start: int = 0,
-                      shuffle_test: bool = True):
+                      one_batch: bool = False):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
     # Use pre-downloaded weights
@@ -719,17 +704,8 @@ def _do_run_eval_maze(batch_size: int = 256,
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
-    if repeats and int(repeats) > 1:
-        cmd.extend(["--repeats", str(int(repeats))])
-        if seed_start:
-            cmd.extend(["--seed-start", str(int(seed_start))])
     if one_batch:
         cmd.append("--one-batch")
-    # Forward shuffle-test flag (enabled by default)
-    if bool(shuffle_test):
-        cmd.append("--shuffle-test")
-    else:
-        cmd.append("--no-shuffle-test")
     print("Running Maze eval:", " ".join(cmd))
     result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     _symlink_latest(parent, out_dir)
@@ -1135,10 +1111,7 @@ def predict_job(grid: object = None, index: int | None = None, file: str | None 
 def run_eval_sudoku_job(model: str = "mlp",
                         dataset_path: str | None = None,
                         batch_size: int = 256,
-                        one_batch: bool = False,
-                        repeats: int = 1,
-                        seed_start: int = 0,
-                        shuffle_test: bool = True):
+                        one_batch: bool = False):
     """Job: Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
@@ -1166,7 +1139,7 @@ def run_eval_sudoku_job(model: str = "mlp",
     os.makedirs(out_dir, exist_ok=True)
 
     # Delegate to internal helper that handles MLP arch override and flags
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start, shuffle_test=shuffle_test)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -1174,40 +1147,31 @@ def run_eval_sudoku_job(model: str = "mlp",
 def run_eval_sudoku(model: str = "mlp",
                     dataset_path: str | None = None,
                     batch_size: int = 256,
-                    one_batch: bool = False,
-                    repeats: int = 1,
-                    seed_start: int = 0,
-                    shuffle_test: bool = True):
+                    one_batch: bool = False):
     """Webhook: delegates to GPU-backed job function to ensure NCCL has GPUs."""
-    return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start, shuffle_test=shuffle_test)
+    return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
 
 
  
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
 def run_eval_maze_job(batch_size: int = 256,
-                      one_batch: bool = False,
-                      repeats: int = 1,
-                      seed_start: int = 0,
-                      shuffle_test: bool = True):
+                      one_batch: bool = False):
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>.
 
-    Delegates to internal helper that handles flags, repeats, and CI printing.
+    Delegates to internal helper that handles flags and CI printing.
     """
     # Ensure repo present; helper will chdir and perform the rest
     _ensure_repo()
-    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start, shuffle_test=shuffle_test)
+    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def run_eval_maze(batch_size: int = 256,
-                  one_batch: bool = False,
-                  repeats: int = 1,
-                  seed_start: int = 0,
-                  shuffle_test: bool = True):
+                  one_batch: bool = False):
     """Webhook: delegates to GPU-backed job function to ensure NCCL has GPUs."""
-    return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start, shuffle_test=shuffle_test)
+    return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)
 
 
 @app.function(volumes={"/data": volume})
@@ -1300,17 +1264,14 @@ def cli_prepare_dataset(include_maze: bool = True,
 @app.local_entrypoint()
 def cli_run_eval_maze(batch_size: int = 256,
                       one_batch: bool = False,
-                      repeats: int = 1,
-                      seed_start: int = 0,
-                      eval_only: bool = True,
-                      shuffle_test: bool = True):
+                      eval_only: bool = True):
     """Local entrypoint: trigger Maze evaluation.
 
     Note: eval-only is always enforced internally; this flag is accepted for CLI
     compatibility and ignored (subprocess adds --eval-only regardless).
     """
     _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
-    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start, shuffle_test=shuffle_test)  # type: ignore
+    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)  # type: ignore
     print(res)
 
 
@@ -1319,16 +1280,13 @@ def cli_run_eval_sudoku(model: str = "mlp",
                                                 dataset_path: str | None = None,
                                                 batch_size: int = 256,
                                                 one_batch: bool = False,
-                                                repeats: int = 1,
-                                                seed_start: int = 0,
-                                                eval_only: bool = True,
-                                                shuffle_test: bool = True):
+                                                eval_only: bool = True):
         """Local entrypoint: trigger Sudoku evaluation.
         Example:
             modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
         """
         _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
-        res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start, shuffle_test=shuffle_test)  # type: ignore
+        res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
         print(res)
 
 
