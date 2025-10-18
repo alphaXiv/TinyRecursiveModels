@@ -45,6 +45,7 @@ class PuzzleDatasetConfig(pydantic.BaseModel):
     dataset_paths: List[str]
     global_batch_size: int
     test_set_mode: bool
+    shuffle_test: bool = False
     epochs_per_iter: int  # Batch X epochs in an iteration to reduce overhead.
     rank: int
     num_replicas: int
@@ -90,6 +91,14 @@ class PuzzleDataset(IterableDataset):
             total_groups += current_metadata.total_groups
             num_identifiers += current_metadata.num_puzzle_identifiers
         mean_puzzle_examples = mean_puzzle_examples / total_puzzles
+
+        # Validate merged metadata presence
+        assert prev_seq_len is not None, "seq_len missing from dataset metadata aggregation"
+        assert prev_vocab_size is not None, "vocab_size missing from dataset metadata aggregation"
+        assert prev_pad_id is not None, "pad_id missing from dataset metadata aggregation"
+        # ignore_label_id may be None by design
+        assert prev_blank_identifier_id is not None, "blank_identifier_id missing from dataset metadata aggregation"
+        assert prev_sets is not None and isinstance(prev_sets, list) and len(prev_sets) > 0, "sets missing from dataset metadata aggregation"
 
         self.metadata = PuzzleDatasetMetadata(
             seq_len=prev_seq_len,
@@ -166,27 +175,32 @@ class PuzzleDataset(IterableDataset):
         return {k: torch.from_numpy(v) for k, v in batch.items()}
     
     def _iter_test(self):
+        # Increase iter count once per full test pass to vary RNG across repeats
+        self._iters += 1
+        rng = np.random.Generator(np.random.Philox(seed=self.config.seed + self._iters))
+
         for set_i, (set_name, dataset) in enumerate(self._data.items()):  # type: ignore
             total_examples = len(dataset["inputs"])
 
-            # Load examples one by one
-            start_index = 0
-            while start_index < total_examples:
-                # Compute indices
+            # Build list of global-batch start indices and optionally shuffle order
+            starts = np.arange(0, total_examples, self.config.global_batch_size, dtype=np.int64)
+            if self.config.shuffle_test:
+                starts = rng.permutation(starts)
+
+            for start_index in starts.tolist():
                 end_index = min(total_examples, start_index + self.config.global_batch_size)
-                
+
                 local_start = start_index + self.config.rank * self.local_batch_size
                 local_end   = min(start_index + (self.config.rank + 1) * self.local_batch_size, end_index)
-                
+
                 # Get batch of examples, and also puzzle IDs
                 puzzle_indices = []
                 puzzle_index = np.searchsorted(dataset["puzzle_indices"], local_start, side="right") - 1
                 for i in range(local_start, local_end):
                     while puzzle_index + 1 < len(dataset["puzzle_indices"]) and i >= dataset["puzzle_indices"][puzzle_index + 1]:
                         puzzle_index += 1
-
                     puzzle_indices.append(puzzle_index)
-                
+
                 batch = self._collate_batch({
                     "inputs": dataset["inputs"][local_start: local_end],
                     "labels": dataset["labels"][local_start: local_end],
@@ -194,9 +208,6 @@ class PuzzleDataset(IterableDataset):
                 })
 
                 yield set_name, batch, end_index - start_index
-                
-                # Advance to next batch
-                start_index += self.config.global_batch_size
 
     def _iter_train(self):
         for set_name, dataset in self._data.items():  # type: ignore

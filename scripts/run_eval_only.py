@@ -60,6 +60,10 @@ def parse_args():
     p.add_argument('--eval-only', action='store_true', help='Run in eval-only mode (skip optimizer creation when initializing model)')
     p.add_argument('--bf16', action='store_true', help='Use CUDA autocast with bfloat16 during evaluation for faster inference on A100')
     p.add_argument('--one-batch', action='store_true', help='Evaluate only a single random batch of size global_batch_size from the test split (faster smoke test).')
+    # Shuffle test batches to introduce eval-only randomness (does not affect pretraining)
+    p.add_argument('--shuffle-test', dest='shuffle_test', action='store_true', help='Shuffle test batches to introduce randomness across repeats (eval-only).')
+    p.add_argument('--no-shuffle-test', dest='shuffle_test', action='store_false', help='Disable test batch shuffling (deterministic order).')
+    p.set_defaults(shuffle_test=True)
     return p.parse_args()
 
 
@@ -170,7 +174,8 @@ def main():
         else:
             eval_loader, eval_metadata = create_dataloader(
                 config, 'test', rank=RANK, world_size=WORLD_SIZE,
-                test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size
+                test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size,
+                shuffle_test=bool(args.shuffle_test)
             )
     except Exception:
         if RANK == 0:
