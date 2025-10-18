@@ -309,10 +309,16 @@ def main():
                     p = float(m['exact_accuracy'])
                     lb, ub = wilson_ci(p, n_items)
                     print(f"  {set_name}.exact_accuracy 95% Wilson CI [{lb*100:.2f}%, {ub*100:.2f}%] (N={n_items})")
+                    mid_pct = (lb + ub) * 50.0
+                    half_pct = (ub - lb) * 50.0
+                    print(f"    -> approx: {mid_pct:.2f} ± {half_pct:.2f} %")
                 if isinstance(m, dict) and 'accuracy' in m and n_tokens:
                     p = float(m['accuracy'])
                     lb, ub = wilson_ci(p, n_tokens)
                     print(f"  {set_name}.accuracy 95% Wilson CI [{lb*100:.2f}%, {ub*100:.2f}%] (N={n_tokens})")
+                    mid_pct = (lb + ub) * 50.0
+                    half_pct = (ub - lb) * 50.0
+                    print(f"    -> approx: {mid_pct:.2f} ± {half_pct:.2f} %")
         except Exception as _e:
             print(f"Note: Failed to compute Wilson CI: {_e}")
 

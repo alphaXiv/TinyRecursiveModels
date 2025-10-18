@@ -60,4 +60,12 @@ torchrun --nproc_per_node=8 run_eval.py \
 run_name="pretrain_att_arc1concept_4"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 pretrain.py arch=trm data_paths="[data/arc1concept-aug-1000]" arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=6 +run_name=${run_name} ema=True lr=2e-4 weight_decay=0.1 global_batch_size=1536 lr_warmup_steps=4000 epochs=100000 puzzle_emb_lr=1e-2 eval_interval=5000
 
+MLPrun_name="pretrain_att_arc1concept_4"
+torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 pretrain.py arch=trm data_paths="[data/arc1concept-aug-1000]" arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=6 +run_name=${run_name} ema=True lr=2e-4 weight_decay=0.1 global_batch_size=1536 lr_warmup_steps=4000 epochs=100000 puzzle_emb_lr=1e-2 eval_interval=5000
+
+# MLP
+
+run_name="pretrain_att_arc1concept_h3l6"
+torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 pretrain.py arch=trm data_paths="[data/arc1concept-aug-1000]" arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=4 +run_name=${run_name} ema=True lr=2e-4 weight_decay=0.1 global_batch_size=1536 lr_warmup_steps=4000 epochs=100000 puzzle_emb_lr=1e-2 eval_interval=5000 arch.mlp_t=true
+
   
