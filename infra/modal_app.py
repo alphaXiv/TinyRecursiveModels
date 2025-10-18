@@ -198,10 +198,16 @@ def _load_dataset_metadata(repo_dir: str, task: str) -> dict:
         meta_paths = [
             os.path.join(repo_dir, "data", "maze-30x30-hard-1k", "test", "dataset.json"),
         ]
-    else:
+    elif task == "sudoku":
         meta_paths = [
             os.path.join(repo_dir, "data", "sudoku-extreme-1k-aug-1000", "test", "dataset.json"),
             os.path.join(repo_dir, "data", "sudoku-extreme-full", "test", "dataset.json"),
+        ]
+    else:
+        # ARC AGI 1
+        meta_paths = [
+            os.path.join(repo_dir, "data", "arc1concept-aug-1000", "test", "dataset.json"),
+            os.path.join(repo_dir, "data", "test_arc1", "test", "dataset.json"),
         ]
     for p in meta_paths:
         if os.path.exists(p):
@@ -220,9 +226,11 @@ def _get_realtime_model(task: str, model: str | None):
     if repo_dir not in sys.path:
         sys.path.insert(0, repo_dir)
     safe_task = (task or "maze").lower()
-    safe_model = (model or ("default" if safe_task=="maze" else "mlp")).lower()
+    safe_model = (model or ("default" if safe_task=="maze" else ("mlp" if safe_task=="sudoku" else "attn"))).lower()
     if safe_task == "maze":
         safe_model = "default"
+    elif safe_task == "arc":
+        safe_model = "attn"
     key = (safe_task, safe_model)
 
     with _RT_MODELS_LOCK:
@@ -239,9 +247,14 @@ def _get_realtime_model(task: str, model: str | None):
     from omegaconf import OmegaConf
     from typing import Any, Dict, cast
     oc = OmegaConf.load(arch_path)
+    # Ensure architecture matches checkpoint for realtime:
+    # - maze: attention (mlp_t=False)
+    # - sudoku: mlp when explicitly requested, else attention
+    # - arc: attention
     if safe_task == "sudoku" and safe_model == "mlp":
-        # Toggle MLP variant for sudoku when requested
         oc.mlp_t = True
+    else:
+        oc.mlp_t = False
     arch_container = OmegaConf.to_container(oc, resolve=True)
     if not isinstance(arch_container, dict):
         raise RuntimeError("Architecture config did not resolve to a dict")
@@ -272,9 +285,11 @@ def _get_realtime_model(task: str, model: str | None):
     # Load weights from pre-downloaded checkpoints
     if safe_task == "maze":
         ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
-    else:
+    elif safe_task == "sudoku":
         ckpt_path = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights",
                                  "step_32550_sudoku_epoch50k" if safe_model=="mlp" else "step_39060_sudoku_60k_epoch_attn_type")
+    else:
+        ckpt_path = os.path.join(repo_dir, "data", "arc-agi1-weights", "step_259320_attn_arc_ag1_l6_h3")
 
     # Build a minimal object with the attribute expected by load_checkpoint
     _load_checkpoint_compat(act, ckpt_path)
@@ -293,6 +308,15 @@ def _format_grid_for_task(task: str, meta: dict, grid: list) -> list:
     if task == "sudoku":
         # Map 0..9 -> 1..10 to match dataset tokens (pad is 0)
         arr = arr.clip(0, 9) + 1
+    elif task == "arc":
+        # Convert 0..9 grid to ARC token space with 30x30 pad and EOS rails.
+        try:
+            from dataset.build_arc_dataset import arc_grid_to_np, np_grid_to_seq_translational_augment
+        except Exception as e:
+            raise RuntimeError(f"ARC formatter import failed: {e}")
+        grid_np = arc_grid_to_np(arr.tolist())
+        inp_vec, _ = np_grid_to_seq_translational_augment(grid_np, grid_np, do_translation=False)
+        return inp_vec.astype(int).tolist()
     # Maze assumed already in token space (best effort)
     return arr.astype(int).tolist()
 
@@ -304,6 +328,32 @@ def _postprocess_preds_for_task(task: str, meta: dict, pred_tokens_1d: list[int]
     if task == "sudoku":
         # Map tokens 1..10 -> 0..9 for UI
         arr = (arr - 1).clip(0, 9)
+    elif task == "arc":
+        # Crop like evaluators.arc._crop and map 2..11 -> 0..9
+        g = arr
+        # ensure 30x30 grid shape if possible
+        if g.shape == (30, 30):
+            pass
+        # find max rectangle without EOS token
+        max_area = 0
+        max_r = 0
+        max_c = 0
+        nr, nc = g.shape
+        num_c = nc
+        for num_r in range(1, nr + 1):
+            for c in range(1, num_c + 1):
+                x = g[num_r - 1, c - 1]
+                if (x < 2) or (x > 11):
+                    num_c = c - 1
+                    break
+            area = num_r * num_c
+            if area > max_area:
+                max_area = area
+                max_r, max_c = num_r, num_c
+        if max_r > 0 and max_c > 0:
+            g = g[:max_r, :max_c]
+        g = (g - 2).clip(0, 9)
+        return g.astype(int).tolist()
     return arr.astype(int).tolist()
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2")
@@ -333,14 +383,16 @@ def predict_realtime(
         eff_task = task if task is not None else task_q
         eff_model = model if model is not None else model_q
         eff_task = (eff_task or "maze").lower()
-        eff_model = (eff_model or ("default" if eff_task=="maze" else "mlp")).lower()
-        if eff_task not in ("maze", "sudoku"):
-            raise HTTPException(status_code=400, detail="task must be 'maze' or 'sudoku'")
+        eff_model = (eff_model or ("default" if eff_task=="maze" else ("mlp" if eff_task=="sudoku" else "attn"))).lower()
+        if eff_task not in ("maze", "sudoku", "arc"):
+            raise HTTPException(status_code=400, detail="task must be 'maze', 'sudoku', or 'arc'")
         if eff_task == "maze":
             eff_model = "default"
-        else:
+        elif eff_task == "sudoku":
             if eff_model not in ("mlp", "attn"):
                 raise HTTPException(status_code=400, detail="For sudoku, model must be 'mlp' or 'attn'")
+        else:
+            eff_model = "attn"
 
         # Parse grid
         g = grid if grid is not None else grid_q
@@ -409,10 +461,21 @@ def predict_realtime(
         pred_tokens = pred_tokens.squeeze(0).detach().to("cpu").numpy().astype(int).tolist()
         solved = _postprocess_preds_for_task(eff_task, meta, pred_tokens)
 
+        # For UI, prefer displaying the raw input grid in natural 0..9 form for ARC
+        display_input = None
+        try:
+            if eff_task == "arc":
+                arr = np.array(g)
+                if arr.ndim == 1:
+                    s = int(np.sqrt(arr.size))
+                    arr = arr.reshape(s, s)
+                display_input = arr.astype(int).tolist()
+        except Exception:
+            pass
         payload = {
             "task": eff_task,
             "model": eff_model,
-            "input_maze": inp2d,
+            "input_maze": display_input if display_input is not None else inp2d,
             "solved_maze": solved,
             "inference_steps": steps,
         }
@@ -500,6 +563,15 @@ def _bootstrap_repo_and_weights(repo_dir: str = "/data/repo") -> dict:
     else:
         results["sudoku_attn"] = attn_file
 
+    # ARC AGI 1 weights
+    arc_dir = os.path.join(repo_dir, "data", "arc-agi1-weights")
+    os.makedirs(arc_dir, exist_ok=True)
+    arc_file = os.path.join(arc_dir, "step_259320_attn_arc_ag1_l6_h3")
+    if not os.path.exists(arc_file):
+        results["arc_attn"] = hf_hub_download(repo_id="YuvrajSingh9886/arc_agi_1_trm_model", filename="step_259320_attn_arc_ag1_l6_h3", local_dir=arc_dir)
+    else:
+        results["arc_attn"] = arc_file
+
     return {"status": "bootstrapped", "paths": results}
 
 
@@ -566,6 +638,7 @@ def _get_eval_script_path(repo_dir: str) -> str:
 # webhook endpoints and job/CLI functions without chaining Modal function calls.
 def _do_prepare_dataset(include_maze: bool,
                         include_sudoku: bool,
+                        include_arc: bool,
                         sudoku_output_dir: str,
                         sudoku_subsample_size: int,
                         sudoku_num_aug: int):
@@ -591,8 +664,18 @@ def _do_prepare_dataset(include_maze: bool,
         ]
         print("Running:", " ".join(cmd))
         subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    if include_arc:
+        cmd = [
+            sys.executable, "-m", "dataset.build_arc_dataset",
+            "--input-file-prefix", "kaggle/combined/arc-agi",
+            "--output-dir", "data/arc1concept-aug-1000",
+            "--subsets", "training", "evaluation", "concept",
+            "--test-set-name", "evaluation",
+        ]
+        print("Running:", " ".join(cmd))
+        subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
 
-    return {"status": "Datasets prepared", "maze": include_maze, "sudoku": include_sudoku, "sudoku_output_dir": sudoku_output_dir}
+    return {"status": "Datasets prepared", "maze": include_maze, "sudoku": include_sudoku, "arc": include_arc, "sudoku_output_dir": sudoku_output_dir}
 
 
 
@@ -712,9 +795,53 @@ def _do_run_eval_maze(batch_size: int = 256,
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
+def _do_run_eval_arc(dataset_path: str | None = None,
+                     batch_size: int = 256,
+                     one_batch: bool = False):
+    """Run evaluation for ARC AGI 1 dataset using attention model weights."""
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+    # Weights expected under data/arc-agi1-weights
+    ckpt_path = os.path.join(repo_dir, "data", "arc-agi1-weights", "step_259320_attn_arc_ag1_l6_h3")
+    # Dataset dir default
+    if dataset_path:
+        dataset_dir = dataset_path
+    else:
+        dataset_dir = os.path.join(repo_dir, "data", "arc1concept-aug-1000")
+        if not os.path.isdir(dataset_dir):
+            dataset_dir = os.path.join(repo_dir, "data", "test_arc1")
+    if not os.path.isdir(dataset_dir):
+        print("WARNING: ARC dataset folder not found at", dataset_dir)
+
+    parent = os.path.join(repo_dir, "out", "arc", "attn")
+    os.makedirs(parent, exist_ok=True)
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(parent, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    eval_script = _get_eval_script_path(repo_dir)
+    cmd = [
+        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        "--checkpoint", ckpt_path,
+        "--dataset", dataset_dir,
+        "--outdir", out_dir,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only",
+        "--bf16",
+        "--global-batch-size", str(int(batch_size)),
+    ]
+    if one_batch:
+        cmd.append("--one-batch")
+    print("Running ARC eval:", " ".join(cmd))
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    _symlink_latest(parent, out_dir)
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+
+
 @app.function(image=IMAGE, volumes={"/data": volume})
 def prepare_dataset_job(include_maze: bool = True,
                         include_sudoku: bool = False,
+                        include_arc: bool = False,
                         sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
                         sudoku_subsample_size: int = 1000,
                         sudoku_num_aug: int = 1000):
@@ -722,6 +849,7 @@ def prepare_dataset_job(include_maze: bool = True,
     return _do_prepare_dataset(
         include_maze=include_maze,
         include_sudoku=include_sudoku,
+        include_arc=include_arc,
         sudoku_output_dir=sudoku_output_dir,
         sudoku_subsample_size=sudoku_subsample_size,
         sudoku_num_aug=sudoku_num_aug,
@@ -732,6 +860,7 @@ def prepare_dataset_job(include_maze: bool = True,
 @modal.fastapi_endpoint(docs=True)
 def prepare_dataset(include_maze: bool = True,
                     include_sudoku: bool = False,
+                    include_arc: bool = False,
                     sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
                     sudoku_subsample_size: int = 1000,
                     sudoku_num_aug: int = 1000):
@@ -739,6 +868,7 @@ def prepare_dataset(include_maze: bool = True,
     return _do_prepare_dataset(
         include_maze=include_maze,
         include_sudoku=include_sudoku,
+        include_arc=include_arc,
         sudoku_output_dir=sudoku_output_dir,
         sudoku_subsample_size=sudoku_subsample_size,
         sudoku_num_aug=sudoku_num_aug,
@@ -832,16 +962,18 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
     # Choose output directory depending on optional task/model/run
     base_out = os.path.join(repo_dir, "out")
     safe_task = _safe_name(task or "maze")
-    if safe_task not in ("maze", "sudoku"):
-        raise HTTPException(status_code=400, detail="task must be 'maze' or 'sudoku'")
+    if safe_task not in ("maze", "sudoku", "arc"):
+        raise HTTPException(status_code=400, detail="task must be 'maze', 'sudoku', or 'arc'")
     if safe_task == "maze":
         if model not in (None, "", "default"):
             raise HTTPException(status_code=400, detail="maze has a single model; omit 'model' or use model=default")
         safe_model = "default"
-    else:
+    elif safe_task == "sudoku":
         safe_model = _safe_name(model or "mlp")
         if safe_model not in ("mlp", "attn"):
             raise HTTPException(status_code=400, detail="For sudoku, model must be 'mlp' or 'attn'")
+    else:
+        safe_model = "attn"
     task_dir = os.path.join(base_out, safe_task, safe_model)
     # Resolve run directory
     if run:
@@ -946,6 +1078,19 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
         side = int(side_f)
         solved_maze = np.asarray(grid_arr).reshape((side, side)).tolist()
 
+    # Task-specific postprocess for ARC: crop out EOS rails and map 2..11 -> 0..9
+    if safe_task == "arc":
+        try:
+            meta_arc = _load_dataset_metadata("/data/repo", "arc")
+        except Exception:
+            meta_arc = {}
+        try:
+            tokens = np.array(solved_maze).reshape(-1).astype(int).tolist()
+            solved_maze = _postprocess_preds_for_task("arc", meta_arc, tokens)
+        except Exception:
+            # Non-fatal: if postprocess fails, keep original grid
+            pass
+
     # Prepare input_maze: if user provided a grid, echo it; otherwise load corresponding inputs shard
     input_maze = None
     target_maze = None
@@ -1032,6 +1177,25 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
                     raise HTTPException(status_code=400, detail=f"Saved label grid length {L_lbl} is not a perfect square")
                 side_lbl = int(side_f_lbl)
                 target_maze = np.asarray(lbl_arr).reshape((side_lbl, side_lbl)).tolist()
+
+    # Task-specific postprocess for ARC on inputs/labels loaded from saved tensors
+    if safe_task == "arc" and provided_grid is None:
+        try:
+            meta_arc = _load_dataset_metadata("/data/repo", "arc")
+        except Exception:
+            meta_arc = {}
+        try:
+            if input_maze is not None:
+                inp_tokens = np.array(input_maze).reshape(-1).astype(int).tolist()
+                input_maze = _postprocess_preds_for_task("arc", meta_arc, inp_tokens)
+        except Exception:
+            pass
+        try:
+            if target_maze is not None:
+                tgt_tokens = np.array(target_maze).reshape(-1).astype(int).tolist()
+                target_maze = _postprocess_preds_for_task("arc", meta_arc, tgt_tokens)
+        except Exception:
+            pass
 
     payload = {"solved_maze": solved_maze, "input_maze": input_maze, "source_file": preds_path, "index": ret_index, "task": safe_task, "model": safe_model, "run_dir": out_dir}
     # If caller POSTed a grid, persist the I/O→O/P triplet under out/<task>/<model>/custom/
@@ -1174,6 +1338,26 @@ def run_eval_maze(batch_size: int = 256,
     return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)
 
 
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
+def run_eval_arc_job(dataset_path: str | None = None,
+                     batch_size: int = 256,
+                     one_batch: bool = False):
+    """Job: Run evaluation for ARC AGI 1 (attention model). Writes outputs to out/arc/attn/<run_id>."""
+    _ensure_repo()
+    # Reuse internal helper
+    repo_dir = _ensure_repo()
+    return _do_run_eval_arc(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
+
+
+@app.function(image=IMAGE, volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def run_eval_arc(dataset_path: str | None = None,
+                 batch_size: int = 256,
+                 one_batch: bool = False):
+    """Webhook: delegates to GPU-backed ARC eval job."""
+    return run_eval_arc_job.remote(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
+
+
 @app.function(volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def get_maze_visualizer():
@@ -1201,6 +1385,23 @@ def get_sudoku_visualizer():
 
     if not os.path.exists(html_path):
         raise FileNotFoundError(f"Sudoku visualizer HTML not found at {html_path}; ensure repo is cloned")
+
+    with open(html_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    return Response(content, media_type="text/html")
+
+
+@app.function(volumes={"/data": volume})
+@modal.fastapi_endpoint(docs=True)
+def get_arc_visualizer():
+    """Serve the ARC AGI 1 visualizer HTML."""
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+    html_path = os.path.join(repo_dir, "arc_visualizer.html")
+
+    if not os.path.exists(html_path):
+        raise FileNotFoundError(f"ARC visualizer HTML not found at {html_path}; ensure repo is cloned")
 
     with open(html_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -1244,6 +1445,7 @@ def assets(filename: str):
 @app.local_entrypoint()
 def cli_prepare_dataset(include_maze: bool = True,
                         include_sudoku: bool = False,
+                        include_arc: bool = False,
                         sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
                         sudoku_subsample_size: int = 1000,
                         sudoku_num_aug: int = 1000):
@@ -1254,6 +1456,7 @@ def cli_prepare_dataset(include_maze: bool = True,
     res = prepare_dataset_job.remote(
         include_maze=include_maze,
         include_sudoku=include_sudoku,
+        include_arc=include_arc,
         sudoku_output_dir=sudoku_output_dir,
         sudoku_subsample_size=sudoku_subsample_size,
         sudoku_num_aug=sudoku_num_aug,
