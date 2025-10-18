@@ -1175,50 +1175,13 @@ def run_eval_maze_job(batch_size: int = 256,
                       one_batch: bool = False,
                       repeats: int = 1,
                       seed_start: int = 0):
-    """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
-    repo_dir = _ensure_repo()
-    os.chdir(repo_dir)
+    """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>.
 
-    # Weights expected to be present (bootstrapped via prepare)
-    ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
-    dataset_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
-    if not os.path.isdir(dataset_dir):
-        print("WARNING: Maze dataset folder not found at", dataset_dir)
-
-    parent = os.path.join(repo_dir, "out", "maze", "default")
-    os.makedirs(parent, exist_ok=True)
-    import time
-    run_id = time.strftime("%Y%m%d-%H%M%S")
-    out_dir = os.path.join(parent, run_id)
-    os.makedirs(out_dir, exist_ok=True)
-    
-    eval_script = _get_eval_script_path(repo_dir)
-    # Detect if eval script supports --one-batch
-    supports_one_batch = False
-    try:
-        with open(eval_script, "r", encoding="utf-8") as f:
-            supports_one_batch = "--one-batch" in f.read()
-    except Exception:
-        pass
-    cmd = [
-        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--checkpoint", ckpt_path,
-        "--dataset", dataset_dir,
-        "--outdir", out_dir,
-        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only",
-        "--bf16",
-        "--global-batch-size", str(int(batch_size)),
-    ]
-    if one_batch:
-        if supports_one_batch:
-            cmd.append("--one-batch")
-        else:
-            print("WARNING: --one-batch requested, but eval script does not support it. Running full test set.")
-    print("Running Maze eval:", " ".join(cmd))
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
-    _symlink_latest(parent, out_dir)
-    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
+    Delegates to internal helper that handles flags, repeats, and CI printing.
+    """
+    # Ensure repo present; helper will chdir and perform the rest
+    _ensure_repo()
+    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -1348,7 +1311,7 @@ def cli_run_eval_sudoku(model: str = "mlp",
     """
         _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
         res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)  # type: ignore
-    print(res)
+        print(res)
 
 
 @app.local_entrypoint()
