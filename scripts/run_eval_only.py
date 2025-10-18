@@ -92,19 +92,12 @@ def main():
     config_obj = None
     objects = [None]
     if RANK == 0:
-        # Derive config directory and base name from args.config
+    # Derive config directory and base name from args.config
         config_path = os.path.dirname(args.config) or 'config'
-        # Hydra initialize requires a RELATIVE config_path
-        if os.path.isabs(config_path):
-            try:
-                config_path = os.path.relpath(config_path, start=os.getcwd())
-            except Exception:
-                # Best effort; if relpath fails, fall back to 'config' and rely on cwd
-                config_path = 'config'
         config_name = os.path.splitext(os.path.basename(args.config))[0]
 
-        # Compose Hydra config; CLI overrides applied programmatically below
-        with initialize(config_path=config_path, job_name="run_eval_only", version_base=None):
+    # Compose Hydra config; CLI overrides applied programmatically below
+        with initialize(config_path=config_path, job_name="run_eval_only"):
             hydra_cfg = compose(config_name=config_name)
 
     # Convert to plain dict (resolve interpolations)

@@ -549,10 +549,9 @@ def _get_eval_script_path(repo_dir: str) -> str:
     """Return absolute path to run_eval_only.py. Prefer repo root, else scripts/.
     Logs existence for debugging.
     """
-    # Prefer the source of truth under scripts/ to avoid stale copies at repo root
     candidates = [
-        os.path.join(repo_dir, "scripts", "run_eval_only.py"),
         os.path.join(repo_dir, "run_eval_only.py"),
+        os.path.join(repo_dir, "scripts", "run_eval_only.py"),
     ]
     for p in candidates:
         if os.path.exists(p):
@@ -628,8 +627,9 @@ def _do_run_eval_sudoku(model: str,
     os.makedirs(out_dir, exist_ok=True)
 
     # Choose arch override for MLP vs attention by temporarily swapping arch file
-    # Provide ABSOLUTE config path so Hydra can always resolve it correctly regardless of script location
-    config_path = os.path.join(repo_dir, "config", "cfg_pretrain.yaml")
+    # Hydra.initialize requires config_path to be relative to the current working directory.
+    # We chdir(repo_dir) above, so pass a relative path here.
+    config_path = "config/cfg_pretrain.yaml"
     arch_dir = os.path.join(repo_dir, "config", "arch")
     trm_path = os.path.join(arch_dir, "trm.yaml")
     backup_path = os.path.join(arch_dir, "trm.yaml.bak")
@@ -646,9 +646,6 @@ def _do_run_eval_sudoku(model: str,
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
-    # Ensure repo root is on PYTHONPATH so imports like `from models...` resolve when script lives under scripts/
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
     if repeats and int(repeats) > 1:
         cmd.extend(["--repeats", str(int(repeats))])
         if seed_start:
@@ -672,7 +669,7 @@ def _do_run_eval_sudoku(model: str,
             with open(trm_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(data, f, sort_keys=False)
         print("Running Sudoku eval:", " ".join(cmd))
-        result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
+        result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     finally:
         # Restore original arch file if we swapped it
         if need_mlp and os.path.exists(backup_path):
@@ -707,7 +704,6 @@ def _do_run_eval_maze(batch_size: int = 256,
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--config", os.path.join(repo_dir, "config", "cfg_pretrain.yaml"),
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -716,9 +712,6 @@ def _do_run_eval_maze(batch_size: int = 256,
         "--bf16",
         "--global-batch-size", str(int(batch_size)),
     ]
-    # Ensure repo root is on PYTHONPATH so imports like `from models...` resolve when script lives under scripts/
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
     if repeats and int(repeats) > 1:
         cmd.extend(["--repeats", str(int(repeats))])
         if seed_start:
@@ -726,7 +719,7 @@ def _do_run_eval_maze(batch_size: int = 256,
     if one_batch:
         cmd.append("--one-batch")
     print("Running Maze eval:", " ".join(cmd))
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     _symlink_latest(parent, out_dir)
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
@@ -781,7 +774,6 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--config", os.path.join(repo_dir, "config", "cfg_pretrain.yaml"),
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -792,9 +784,7 @@ def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550
     ]
     print(f"Running evaluation command: {' '.join(cmd)}")
     # Run and raise on failure
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     return {"status": "Evaluation completed", "output_dir": local_out, "result": result}
 
 
@@ -830,7 +820,6 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--config", os.path.join(repo_dir, "config", "cfg_pretrain.yaml"),
         "--checkpoint", os.path.join(repo_dir, checkpoint_path),
         "--dataset", os.path.join(repo_dir, dataset_path),
         "--outdir", local_out,
@@ -840,9 +829,7 @@ def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path:
         "--global-batch-size", str(int(batch_size)),
     ]
     print(f"Running command: {' '.join(cmd)}")
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{repo_dir}:{env.get('PYTHONPATH','')}"
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True, cwd=repo_dir, env=env)
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     print("Evaluation completed.")
 
     metrics = {}  # No metrics returned from subprocess
@@ -1189,8 +1176,49 @@ def run_eval_maze_job(batch_size: int = 256,
                       repeats: int = 1,
                       seed_start: int = 0):
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>."""
-    # Delegate to internal helper that forwards repeats/seed_start and handles outputs/symlink
-    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)
+    repo_dir = _ensure_repo()
+    os.chdir(repo_dir)
+
+    # Weights expected to be present (bootstrapped via prepare)
+    ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
+    dataset_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
+    if not os.path.isdir(dataset_dir):
+        print("WARNING: Maze dataset folder not found at", dataset_dir)
+
+    parent = os.path.join(repo_dir, "out", "maze", "default")
+    os.makedirs(parent, exist_ok=True)
+    import time
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    out_dir = os.path.join(parent, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+    
+    eval_script = _get_eval_script_path(repo_dir)
+    # Detect if eval script supports --one-batch
+    supports_one_batch = False
+    try:
+        with open(eval_script, "r", encoding="utf-8") as f:
+            supports_one_batch = "--one-batch" in f.read()
+    except Exception:
+        pass
+    cmd = [
+        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        "--checkpoint", ckpt_path,
+        "--dataset", dataset_dir,
+        "--outdir", out_dir,
+        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+        "--eval-only",
+        "--bf16",
+        "--global-batch-size", str(int(batch_size)),
+    ]
+    if one_batch:
+        if supports_one_batch:
+            cmd.append("--one-batch")
+        else:
+            print("WARNING: --one-batch requested, but eval script does not support it. Running full test set.")
+    print("Running Maze eval:", " ".join(cmd))
+    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    _symlink_latest(parent, out_dir)
+    return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -1315,12 +1343,12 @@ def cli_run_eval_sudoku(model: str = "mlp",
                                                 seed_start: int = 0,
                                                 eval_only: bool = True):
         """Local entrypoint: trigger Sudoku evaluation.
-        Example:
-        modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
+    Example:
+      modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
     """
         _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
         res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, repeats=repeats, seed_start=seed_start)  # type: ignore
-        print(res)
+    print(res)
 
 
 @app.local_entrypoint()
