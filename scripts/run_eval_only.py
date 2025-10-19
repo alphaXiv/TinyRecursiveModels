@@ -28,6 +28,8 @@ import torch.backends.cudnn as cudnn
 from hydra import initialize, compose
 from omegaconf import OmegaConf
 from models.ema import EMAHelper
+from glob import glob
+import math
 
 # Reuse functions and classes from pretrain.py
 from pretrain import (
@@ -282,8 +284,6 @@ def main():
 
     # Rank 0: print metrics and Wilson CI if possible
     if RANK == 0 and metrics is not None:
-        from glob import glob
-        import math
         print('Run metrics:')
         print(metrics)
 

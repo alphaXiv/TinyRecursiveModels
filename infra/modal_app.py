@@ -18,6 +18,7 @@ import time
 import uuid
 import math
 import re
+import importlib
 
 import numpy as np
 import torch
@@ -131,7 +132,6 @@ def _load_checkpoint_compat(model, ckpt_path: str):
     """Load checkpoint into ACT-wrapped model with key normalization.
     Mirrors logic from pretrain.load_checkpoint without requiring PretrainConfig type.
     """
-    import torch
     sd = torch.load(ckpt_path, map_location="cuda" if torch.cuda.is_available() else "cpu")
     
     # Preprocess keys: strip compile/DataParallel-style prefixes so they match the target module
@@ -239,13 +239,14 @@ def _get_realtime_model(task: str, model: str | None):
 
     # Build new model
     os.environ.setdefault("DISABLE_COMPILE", "1")
-    from models.recursive_reasoning.trm import TinyRecursiveReasoningModel_ACTV1
-    from models.losses import ACTLossHead
+    # Import dynamically after ensuring repo_dir is on sys.path
+    trm_mod = importlib.import_module("models.recursive_reasoning.trm")
+    TinyRecursiveReasoningModel_ACTV1 = getattr(trm_mod, "TinyRecursiveReasoningModel_ACTV1")
+    losses_mod = importlib.import_module("models.losses")
+    ACTLossHead = getattr(losses_mod, "ACTLossHead")
 
     # Arch config: load via OmegaConf to resolve ${...} interpolations into concrete values
     arch_path = os.path.join(repo_dir, "config", "arch", "trm.yaml")
-    from omegaconf import OmegaConf
-    from typing import Any, Dict, cast
     oc = OmegaConf.load(arch_path)
     # Ensure architecture matches checkpoint for realtime:
     # - maze: attention (mlp_t=False)
@@ -313,7 +314,9 @@ def _format_grid_for_task(task: str, meta: dict, grid: list) -> list:
     elif task == "arc":
         # Convert 0..9 grid to ARC token space with 30x30 pad and EOS rails.
         try:
-            from dataset.build_arc_dataset import arc_grid_to_np, np_grid_to_seq_translational_augment
+            arc_mod = importlib.import_module("dataset.build_arc_dataset")
+            arc_grid_to_np = getattr(arc_mod, "arc_grid_to_np")
+            np_grid_to_seq_translational_augment = getattr(arc_mod, "np_grid_to_seq_translational_augment")
         except Exception as e:
             raise RuntimeError(f"ARC formatter import failed: {e}")
         grid_np = arc_grid_to_np(arr.tolist())
