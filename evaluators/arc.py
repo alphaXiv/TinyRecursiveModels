@@ -4,36 +4,37 @@ import json
 
 import torch
 import numpy as np
-from numba import njit
 import torch.distributed as dist
 
 from dataset.build_arc_dataset import inverse_aug, grid_hash, arc_grid_to_np
 from dataset.common import PuzzleDatasetMetadata
 
-@njit
-def _crop(grid: np.ndarray):
-    """Find maximum-sized rectangle without any EOS token inside. """
-    grid = grid.reshape(30, 30)
-
+def _crop_np(grid: np.ndarray) -> np.ndarray:
+    """Find maximum-sized rectangle without any EOS token (values outside [2, 11]).
+    Returns the cropped grid with values shifted to [0..9] and dtype=uint8.
+    Pure NumPy implementation to avoid Numba runtime issues.
+    """
+    g = np.asarray(grid, dtype=grid.dtype).reshape(30, 30)
+    nr, nc = g.shape
     max_area = 0
-    max_size = (0, 0)
-    nr, nc = grid.shape
-    
+    max_r = 0
+    max_c = 0
+    # Track current usable width (num_c) as rows grow
     num_c = nc
     for num_r in range(1, nr + 1):
-        # Scan for maximum c
+        # shrink num_c if an EOS token is encountered in this new row
         for c in range(1, num_c + 1):
-            x = grid[num_r - 1, c - 1]
-            if (x < 2) | (x > 11):
+            x = g[num_r - 1, c - 1]
+            if (x < 2) or (x > 11):
                 num_c = c - 1
                 break
-        
         area = num_r * num_c
         if area > max_area:
             max_area = area
-            max_size = (num_r, num_c)
-
-    return (grid[:max_size[0], :max_size[1]] - 2).astype(np.uint8)
+            max_r = num_r
+            max_c = num_c
+    out = g[:max_r, :max_c] - 2
+    return out.astype(np.uint8, copy=False)
 
 
 class ARC:
@@ -90,9 +91,9 @@ class ARC:
             name = self.identifier_map[identifier]
             orig_name, _inverse_fn = inverse_aug(name)
             
-            input_hash = grid_hash(_inverse_fn(_crop(input)))
+            input_hash = grid_hash(_inverse_fn(_crop_np(input)))
             
-            pred = _inverse_fn(_crop(pred))
+            pred = _inverse_fn(_crop_np(pred))
             assert np.all((pred >= 0) & (pred <= 9)), f"Puzzle {name}'s prediction out of 0-9 range."  # Sanity check
 
             # Store into local state
@@ -114,7 +115,11 @@ class ARC:
             return
 
         submission = {}
+        # Puzzle-averaged correctness (as before)
         correct = [0.0 for _ in range(len(self.pass_Ks))]
+        # Also track pooled per-example totals to enable robust CI downstream
+        total_examples = 0
+        total_correct_per_k = [0 for _ in range(len(self.pass_Ks))]
 
         for name, puzzle in self.test_puzzles.items():
             # Process test examples in this puzzle
@@ -126,7 +131,7 @@ class ARC:
                 
                 p_map = {}
                 for hmap, preds in global_hmap_preds:  # type: ignore
-                    for h, q in preds.get(name, {}).get(input_hash, {}):
+                    for h, q in preds.get(name, {}).get(input_hash, []):
                         p_map.setdefault(h, [0, 0])
                         p_map[h][0] += 1
                         p_map[h][1] += q
@@ -162,16 +167,26 @@ class ARC:
                 
                 submission[name].append({f"attempt_{i + 1}": grid.tolist() for i, grid in enumerate(pred_grids)})
 
-            # Total correctness
+            # Total correctness (puzzle-averaged)
             for i in range(len(self.pass_Ks)):
                 correct[i] += num_test_correct[i] / len(puzzle["test"])
+
+            # Accumulate pooled per-example statistics
+            total_examples += len(puzzle["test"])
+            for i in range(len(self.pass_Ks)):
+                total_correct_per_k[i] += num_test_correct[i]
 
         # Save submission
         if save_path is not None:
             with open(os.path.join(save_path, "submission.json"), "w") as f:
                 json.dump(submission, f)
 
-        # Final result
+        # Final results
         all_results = {f"ARC/pass@{k}": correct[i] / len(self.test_puzzles) for i, k in enumerate(self.pass_Ks)}
+        # Add per-example pooled pass@k (useful for confidence intervals with clear N)
+        if total_examples > 0:
+            all_results["ARC/example_N"] = float(total_examples)
+            for i, k in enumerate(self.pass_Ks):
+                all_results[f"ARC/example_pass@{k}"] = float(total_correct_per_k[i]) / float(total_examples)
 
         return all_results

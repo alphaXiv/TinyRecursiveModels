@@ -288,6 +288,8 @@ def _get_realtime_model(task: str, model: str | None):
     elif safe_task == "sudoku":
         ckpt_path = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights",
                                  "step_32550_sudoku_epoch50k" if safe_model=="mlp" else "step_39060_sudoku_60k_epoch_attn_type")
+        # ckpt_path = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights",
+        #                          "step_39060_sudoku_epoch_60k" if safe_model=="mlp" else "step_32550_sudoku_50k_epoch_attn_type")
     else:
         ckpt_path = os.path.join(repo_dir, "data", "arc-agi1-weights", "step_259320_attn_arc_ag1_l6_h3")
 
@@ -538,39 +540,50 @@ def _bootstrap_repo_and_weights(repo_dir: str = "/data/repo") -> dict:
     except Exception as e:
         print("WARNING: Failed to sync run_eval_only.py:", e)
 
-    # Download all weights once
+    # Download all weights fresh each time; hard delete directories and re-download.
     results: dict[str, str] = {}
+
     # Maze weights
     maze_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights")
+    if os.path.isdir(maze_dir):
+        shutil.rmtree(maze_dir)
     os.makedirs(maze_dir, exist_ok=True)
-    maze_ckpt_path = os.path.join(maze_dir, "step_32550")
-    if not os.path.exists(maze_ckpt_path):
-        results["maze"] = hf_hub_download(repo_id="YuvrajSingh9886/maze-hard-trm", filename="step_32550", local_dir=maze_dir)
-    else:
-        results["maze"] = maze_ckpt_path
+    maze_ckpt_path = hf_hub_download(
+        repo_id="YuvrajSingh9886/maze-hard-trm",
+        filename="step_32550",
+        local_dir=maze_dir,
+    )
+    results["maze"] = maze_ckpt_path
 
     # Sudoku weights (mlp/attn)
     sud_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights")
+    if os.path.isdir(sud_dir):
+        shutil.rmtree(sud_dir)
     os.makedirs(sud_dir, exist_ok=True)
-    mlp_file = os.path.join(sud_dir, "step_32550_sudoku_epoch50k")
-    attn_file = os.path.join(sud_dir, "step_39060_sudoku_60k_epoch_attn_type")
-    if not os.path.exists(mlp_file):
-        results["sudoku_mlp"] = hf_hub_download(repo_id="YuvrajSingh9886/sudoku-extreme-trm", filename="step_32550_sudoku_epoch50k", local_dir=sud_dir)
-    else:
-        results["sudoku_mlp"] = mlp_file
-    if not os.path.exists(attn_file):
-        results["sudoku_attn"] = hf_hub_download(repo_id="YuvrajSingh9886/sudoku-extreme-trm", filename="step_39060_sudoku_60k_epoch_attn_type", local_dir=sud_dir)
-    else:
-        results["sudoku_attn"] = attn_file
+    mlp_path = hf_hub_download(
+        repo_id="YuvrajSingh9886/sudoku-extreme-trm",
+        filename="step_32550_sudoku_epoch50k",
+        local_dir=sud_dir,
+    )
+    attn_path = hf_hub_download(
+        repo_id="YuvrajSingh9886/sudoku-extreme-trm",
+        filename="step_39060_sudoku_60k_epoch_attn_type",
+        local_dir=sud_dir,
+    )
+    results["sudoku_mlp"] = mlp_path
+    results["sudoku_attn"] = attn_path
 
     # ARC AGI 1 weights
     arc_dir = os.path.join(repo_dir, "data", "arc-agi1-weights")
+    if os.path.isdir(arc_dir):
+        shutil.rmtree(arc_dir)
     os.makedirs(arc_dir, exist_ok=True)
-    arc_file = os.path.join(arc_dir, "step_259320_attn_arc_ag1_l6_h3")
-    if not os.path.exists(arc_file):
-        results["arc_attn"] = hf_hub_download(repo_id="YuvrajSingh9886/arc_agi_1_trm_model", filename="step_259320_attn_arc_ag1_l6_h3", local_dir=arc_dir)
-    else:
-        results["arc_attn"] = arc_file
+    arc_path = hf_hub_download(
+        repo_id="YuvrajSingh9886/arc_agi_1_trm_model",
+        filename="step_259320_attn_arc_ag1_l6_h3",
+        local_dir=arc_dir,
+    )
+    results["arc_attn"] = arc_path
 
     return {"status": "bootstrapped", "paths": results}
 
@@ -634,6 +647,48 @@ def _get_eval_script_path(repo_dir: str) -> str:
     return candidates[0]
 
 
+def _resolve_checkpoint(weights_dir: str,
+                        prefer_attn: bool | None = None,
+                        name_contains: list[str] | None = None) -> str:
+    """Pick a checkpoint file under weights_dir.
+
+    Preference order:
+    - If name_contains is provided: prefer files whose names contain ALL those substrings.
+    - Else if prefer_attn is True: prefer names containing 'attn'.
+    - Else if prefer_attn is False: prefer names NOT containing 'attn'.
+    - Else: pick newest file by mtime.
+    Raises FileNotFoundError if no suitable files are found.
+    """
+    if not os.path.isdir(weights_dir):
+        raise FileNotFoundError(f"Weights directory not found: {weights_dir}")
+    files = []
+    for fn in os.listdir(weights_dir):
+        p = os.path.join(weights_dir, fn)
+        if os.path.isfile(p):
+            try:
+                mtime = os.path.getmtime(p)
+            except Exception:
+                mtime = 0
+            files.append((fn, p, mtime))
+    if not files:
+        raise FileNotFoundError(f"No files in weights directory: {weights_dir}")
+    candidates = files
+    if name_contains:
+        def match_all(s: str) -> bool:
+            s_low = s.lower()
+            return all(sub.lower() in s_low for sub in name_contains)
+        filt = [t for t in files if match_all(t[0])]
+        candidates = filt or files
+    elif prefer_attn is not None:
+        if prefer_attn:
+            filt = [t for t in files if 'attn' in t[0].lower()]
+        else:
+            filt = [t for t in files if 'attn' not in t[0].lower()]
+        candidates = filt or files
+    candidates.sort(key=lambda x: x[2], reverse=True)
+    return candidates[0][1]
+
+
 # Internal helpers that perform the actual work. These can be called from both
 # webhook endpoints and job/CLI functions without chaining Modal function calls.
 def _do_prepare_dataset(include_maze: bool,
@@ -643,7 +698,7 @@ def _do_prepare_dataset(include_maze: bool,
                         sudoku_subsample_size: int,
                         sudoku_num_aug: int):
     # One-time repo sync + weights
-    repo_dir = _bootstrap_repo_and_weights()
+    _bootstrap_repo_and_weights()
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
@@ -683,12 +738,20 @@ def _do_prepare_dataset(include_maze: bool,
 def _do_run_eval_sudoku(model: str,
                         dataset_path: str | None,
                         batch_size: int = 16,
-                        one_batch: bool = False):
+                        one_batch: bool = False,
+                        checkpoint: str | None = None):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
-    # Use pre-downloaded weights (set by prepare step)
-    ckpt_path = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights",
-                             "step_32550_sudoku_epoch50k" if (model or "mlp").lower()=="mlp" else "step_39060_sudoku_60k_epoch_attn_type")
+    # Use pre-downloaded weights (set by prepare step) with dynamic resolution
+    need_mlp = (model or "mlp").lower() == "mlp"
+    if checkpoint:
+        ckpt_path = checkpoint if os.path.isabs(checkpoint) else os.path.join(repo_dir, checkpoint)
+    else:
+        sud_dir = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights")
+        try:
+            ckpt_path = _resolve_checkpoint(sud_dir, prefer_attn=not need_mlp)
+        except Exception:
+            ckpt_path = os.path.join(sud_dir, "step_32550_sudoku_epoch50k" if need_mlp else "step_39060_sudoku_60k_epoch_attn_type")
 
     # Dataset path: prefer 1k-aug-1000 if present, else fallback to full, unless overridden
     if dataset_path:
@@ -710,7 +773,6 @@ def _do_run_eval_sudoku(model: str,
     # Choose arch override for MLP vs attention by temporarily swapping arch file
     # Hydra.initialize requires config_path to be relative to the current working directory.
     # We chdir(repo_dir) above, so pass a relative path here.
-    config_path = "config/cfg_pretrain.yaml"
     arch_dir = os.path.join(repo_dir, "config", "arch")
     trm_path = os.path.join(arch_dir, "trm.yaml")
     backup_path = os.path.join(arch_dir, "trm.yaml.bak")
@@ -718,7 +780,6 @@ def _do_run_eval_sudoku(model: str,
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
         "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--config", config_path,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -731,29 +792,34 @@ def _do_run_eval_sudoku(model: str,
         cmd.append("--one-batch")
 
     need_mlp = (model or "mlp").lower() == "mlp"
-    restored = False
+    # We may need to temporarily force mlp_t flag to match the selected model.
+    # If model==mlp -> mlp_t: True; if model==attn -> mlp_t: False
+    backed_up = False
+    changed_flag = False
     try:
-        if need_mlp:
-            # Backup original trm.yaml and set mlp_t: True inline
-            if os.path.exists(trm_path):
-                shutil.copy2(trm_path, backup_path)
-            # Parse YAML and set mlp_t True
+        # Backup and set mlp_t accordingly if needed
+        if os.path.exists(trm_path):
             with open(trm_path, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
-            # Set flag
-            data["mlp_t"] = True
-            # Write back
-            with open(trm_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump(data, f, sort_keys=False)
+            desired = True if need_mlp else False
+            current = bool(data.get("mlp_t", False))
+            if current != desired:
+                if os.path.exists(trm_path):
+                    shutil.copy2(trm_path, backup_path)
+                    backed_up = True
+                data["mlp_t"] = desired
+                with open(trm_path, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(data, f, sort_keys=False)
+                changed_flag = True
+        print("Resolved checkpoint:", ckpt_path)
         print("Running Sudoku eval:", " ".join(cmd))
         result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
     finally:
-        # Restore original arch file if we swapped it
-        if need_mlp and os.path.exists(backup_path):
+        # Restore original arch file only if we made a change
+        if backed_up and os.path.exists(backup_path):
             try:
                 shutil.copy2(backup_path, trm_path)
                 os.remove(backup_path)
-                restored = True
             except Exception as _e:
                 print("WARNING: Failed to restore original arch file:", _e)
     _symlink_latest(parent, out_dir)
@@ -761,11 +827,19 @@ def _do_run_eval_sudoku(model: str,
 
 
 def _do_run_eval_maze(batch_size: int = 256,
-                      one_batch: bool = False):
+                      one_batch: bool = False,
+                      checkpoint: str | None = None):
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
-    # Use pre-downloaded weights
-    ckpt_path = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights", "step_32550")
+    # Use pre-downloaded weights with dynamic resolution
+    if checkpoint:
+        ckpt_path = checkpoint if os.path.isabs(checkpoint) else os.path.join(repo_dir, checkpoint)
+    else:
+        maze_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k-weights")
+        try:
+            ckpt_path = _resolve_checkpoint(maze_dir)
+        except Exception:
+            ckpt_path = os.path.join(maze_dir, "step_32550")
     dataset_dir = os.path.join(repo_dir, "data", "maze-30x30-hard-1k")
     if not os.path.isdir(dataset_dir):
         print("WARNING: Maze dataset folder not found at", dataset_dir)
@@ -776,33 +850,90 @@ def _do_run_eval_maze(batch_size: int = 256,
     out_dir = os.path.join(parent, run_id)
     os.makedirs(out_dir, exist_ok=True)
 
-    eval_script = _get_eval_script_path(repo_dir)
-    cmd = [
-        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--checkpoint", ckpt_path,
-        "--dataset", dataset_dir,
-        "--outdir", out_dir,
-        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only",
-        "--bf16",
-        "--global-batch-size", str(int(batch_size)),
-    ]
-    if one_batch:
-        cmd.append("--one-batch")
-    print("Running Maze eval:", " ".join(cmd))
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    # For Maze we always use attention architecture (mlp_t: False). Temporarily enforce it.
+    arch_dir = os.path.join(repo_dir, "config", "arch")
+    trm_path = os.path.join(arch_dir, "trm.yaml")
+    backup_path = os.path.join(arch_dir, "trm.yaml.bak")
+    backed_up = False
+    try:
+        if os.path.exists(trm_path):
+            with open(trm_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            desired = False
+            current = bool(data.get("mlp_t", False))
+            if current != desired:
+                shutil.copy2(trm_path, backup_path)
+                backed_up = True
+                data["mlp_t"] = desired
+                with open(trm_path, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(data, f, sort_keys=False)
+
+        eval_script = _get_eval_script_path(repo_dir)
+        cmd = [
+            "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+            "--checkpoint", ckpt_path,
+            "--dataset", dataset_dir,
+            "--outdir", out_dir,
+            "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
+            "--eval-only",
+            "--bf16",
+            "--global-batch-size", str(int(batch_size)),
+        ]
+        if one_batch:
+            cmd.append("--one-batch")
+        print("Running Maze eval:", " ".join(cmd))
+        result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
+    finally:
+        if backed_up and os.path.exists(backup_path):
+            try:
+                shutil.copy2(backup_path, trm_path)
+                os.remove(backup_path)
+            except Exception as _e:
+                print("WARNING: Failed to restore original arch file:", _e)
     _symlink_latest(parent, out_dir)
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
 def _do_run_eval_arc(dataset_path: str | None = None,
                      batch_size: int = 256,
-                     one_batch: bool = False):
+                     one_batch: bool = False,
+                     checkpoint: str | None = None):
     """Run evaluation for ARC AGI 1 dataset using attention model weights."""
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
-    # Weights expected under data/arc-agi1-weights
-    ckpt_path = os.path.join(repo_dir, "data", "arc-agi1-weights", "step_259320_attn_arc_ag1_l6_h3")
+
+    # Patch ARC evaluator in the cloned repo if it's using numba@njit crop
+    try:
+        arc_eval_path = os.path.join(repo_dir, "evaluators", "arc.py")
+        if os.path.exists(arc_eval_path):
+            with open(arc_eval_path, "r", encoding="utf-8") as f:
+                arc_src = f.read()
+            if "from numba import njit" in arc_src or "@njit" in arc_src:
+                new_src = arc_src
+                # Remove numba import and decorator
+                new_src = new_src.replace("from numba import njit\n", "")
+                new_src = new_src.replace("@njit\n", "")
+                # Rename _crop to _crop_np and update call sites
+                new_src = new_src.replace("def _crop(", "def _crop_np(")
+                new_src = new_src.replace("_crop(", "_crop_np(")
+                # Ensure default collection for preds.get(...).get(..., [])
+                new_src = new_src.replace(
+                    ".get(input_hash, {})", ".get(input_hash, [])"
+                )
+                with open(arc_eval_path, "w", encoding="utf-8") as f:
+                    f.write(new_src)
+                print("Patched evaluators/arc.py in cloned repo to remove numba and use pure NumPy cropping.")
+    except Exception as _e:
+        print("WARNING: Failed to patch evaluators/arc.py:", _e)
+    # Resolve weights under data/arc-agi1-weights
+    if checkpoint:
+        ckpt_path = checkpoint if os.path.isabs(checkpoint) else os.path.join(repo_dir, checkpoint)
+    else:
+        arc_dir = os.path.join(repo_dir, "data", "arc-agi1-weights")
+        try:
+            ckpt_path = _resolve_checkpoint(arc_dir, prefer_attn=True)
+        except Exception:
+            ckpt_path = os.path.join(arc_dir, "step_259320_attn_arc_ag1_l6_h3")
     # Dataset dir default
     if dataset_path:
         dataset_dir = dataset_path
@@ -838,7 +969,7 @@ def _do_run_eval_arc(dataset_path: str | None = None,
     return {"status": "Evaluation completed", "output_dir": out_dir, "result": getattr(result, 'returncode', 0), "run_id": run_id}
 
 
-@app.function(image=IMAGE, volumes={"/data": volume})
+@app.function(image=IMAGE, volumes={"/data": volume}, timeout=7200)
 def prepare_dataset_job(include_maze: bool = True,
                         include_sudoku: bool = False,
                         include_arc: bool = False,
@@ -856,7 +987,7 @@ def prepare_dataset_job(include_maze: bool = True,
     )
 
 
-@app.function(image=IMAGE, volumes={"/data": volume})
+@app.function(image=IMAGE, volumes={"/data": volume}, timeout=7200)
 @modal.fastapi_endpoint(docs=True)
 def prepare_dataset(include_maze: bool = True,
                     include_sudoku: bool = False,
@@ -1228,7 +1359,7 @@ def _do_predict(grid: object | None = None, index: int | None = None, file: str 
 
 
 @app.function(image = IMAGE, volumes= {"/data": volume})
-@modal.fastapi_endpoint(docs=True)
+@modal.fastapi_endpoint(docs=True, method="GET")
 def predict(
     grid: object | None = Body(default=None),
     index: int | None = None,
@@ -1261,6 +1392,23 @@ def predict(
         # Ensure CORS headers are present even on errors (e.g., 404, 400) so the browser surfaces the JSON.
         body = {"detail": e.detail}
         return JSONResponse(content=body, status_code=e.status_code, headers=headers)
+    except Exception as e:
+        # Catch-all to ensure CORS headers are returned on unexpected errors as well.
+        body = {"detail": str(e)}
+        return JSONResponse(content=body, status_code=500, headers=headers)
+
+
+@app.function(image = IMAGE, volumes= {"/data": volume})
+@modal.fastapi_endpoint(docs=False, method="OPTIONS")
+def predict_options():
+    """Preflight responder for predict endpoint to satisfy CORS in browsers."""
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Max-Age": "86400",
+    }
+    return Response(status_code=204, headers=headers)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -1275,7 +1423,8 @@ def predict_job(grid: object = None, index: int | None = None, file: str | None 
 def run_eval_sudoku_job(model: str = "mlp",
                         dataset_path: str | None = None,
                         batch_size: int = 256,
-                        one_batch: bool = False):
+                        one_batch: bool = False,
+                        checkpoint: str | None = None):
     """Job: Run evaluation for Sudoku using selected model. Writes outputs to out/sudoku/<model>."""
     repo_dir = "/data/repo"
     if not os.path.exists(repo_dir):
@@ -1303,7 +1452,7 @@ def run_eval_sudoku_job(model: str = "mlp",
     os.makedirs(out_dir, exist_ok=True)
 
     # Delegate to internal helper that handles MLP arch override and flags
-    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
+    return _do_run_eval_sudoku(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -1311,51 +1460,56 @@ def run_eval_sudoku_job(model: str = "mlp",
 def run_eval_sudoku(model: str = "mlp",
                     dataset_path: str | None = None,
                     batch_size: int = 256,
-                    one_batch: bool = False):
+                    one_batch: bool = False,
+                    checkpoint: str | None = None):
     """Webhook: delegates to GPU-backed job function to ensure NCCL has GPUs."""
-    return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
+    return run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)
 
 
  
 
 @app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
 def run_eval_maze_job(batch_size: int = 256,
-                      one_batch: bool = False):
+                      one_batch: bool = False,
+                      checkpoint: str | None = None):
     """Job: Run evaluation for Maze (single model). Writes outputs to out/maze/default/<run_id>.
 
     Delegates to internal helper that handles flags and CI printing.
     """
     # Ensure repo present; helper will chdir and perform the rest
     _ensure_repo()
-    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch)
+    return _do_run_eval_maze(batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def run_eval_maze(batch_size: int = 256,
-                  one_batch: bool = False):
+                  one_batch: bool = False,
+                  checkpoint: str | None = None):
     """Webhook: delegates to GPU-backed job function to ensure NCCL has GPUs."""
-    return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)
+    return run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)
 
 
-@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=28800)
 def run_eval_arc_job(dataset_path: str | None = None,
                      batch_size: int = 256,
-                     one_batch: bool = False):
+                     one_batch: bool = False,
+                     checkpoint: str | None = None):
     """Job: Run evaluation for ARC AGI 1 (attention model). Writes outputs to out/arc/attn/<run_id>."""
     _ensure_repo()
     # Reuse internal helper
     repo_dir = _ensure_repo()
-    return _do_run_eval_arc(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)
+    return _do_run_eval_arc(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def run_eval_arc(dataset_path: str | None = None,
                  batch_size: int = 256,
-                 one_batch: bool = False):
+                 one_batch: bool = False,
+                 checkpoint: str | None = None):
     """Webhook: delegates to GPU-backed ARC eval job."""
-    return run_eval_arc_job.remote(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
+    return run_eval_arc_job.remote(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)  # type: ignore
 
 
 @app.function(volumes={"/data": volume})
@@ -1445,13 +1599,13 @@ def assets(filename: str):
 @app.local_entrypoint()
 def cli_prepare_dataset(include_maze: bool = True,
                         include_sudoku: bool = False,
-                        include_arc: bool = False,
+                        include_arc: bool = True,
                         sudoku_output_dir: str = "data/sudoku-extreme-1k-aug-1000",
                         sudoku_subsample_size: int = 1000,
                         sudoku_num_aug: int = 1000):
     """Local entrypoint: run dataset preparation remotely.
     Example:
-      modal run infra/modal_app.py::cli_prepare_dataset --include-sudoku=true
+            modal run infra/modal_app.py::cli_prepare_dataset --include-sudoku=true
     """
     res = prepare_dataset_job.remote(
         include_maze=include_maze,
@@ -1467,14 +1621,20 @@ def cli_prepare_dataset(include_maze: bool = True,
 @app.local_entrypoint()
 def cli_run_eval_maze(batch_size: int = 256,
                       one_batch: bool = False,
-                      eval_only: bool = True):
+                      eval_only: bool = True,
+                      checkpoint: str | None = None,
+                      model: str | None = None):
     """Local entrypoint: trigger Maze evaluation.
 
     Note: eval-only is always enforced internally; this flag is accepted for CLI
     compatibility and ignored (subprocess adds --eval-only regardless).
+
+    The --model flag is accepted for CLI compatibility but ignored for Maze,
+    since only the default attention model is used.
     """
     _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
-    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch)  # type: ignore
+    _ = model      # accepted but ignored for Maze
+    res = run_eval_maze_job.remote(batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)  # type: ignore
     print(res)
 
 
@@ -1483,14 +1643,15 @@ def cli_run_eval_sudoku(model: str = "mlp",
                                                 dataset_path: str | None = None,
                                                 batch_size: int = 256,
                                                 one_batch: bool = False,
-                                                eval_only: bool = True):
-        """Local entrypoint: trigger Sudoku evaluation.
-        Example:
-            modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
-        """
-        _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
-        res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch)  # type: ignore
-        print(res)
+                                                eval_only: bool = True,
+                                                checkpoint: str | None = None):
+    """Local entrypoint: trigger Sudoku evaluation.
+    Example:
+        modal run infra/modal_app.py::cli_run_eval_sudoku --model=attn
+    """
+    _ = eval_only  # accepted but not needed; subprocess always uses --eval-only
+    res = run_eval_sudoku_job.remote(model=model, dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)  # type: ignore
+    print(res)
 
 
 @app.local_entrypoint()

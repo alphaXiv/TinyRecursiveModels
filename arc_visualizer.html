@@ -15,8 +15,8 @@
 <body>
   <h1>ARC AGI 1 Visualizer</h1>
   <div class="controls">
-    <label for="predictUrl">Predict URL:</label>
-    <input id="predictUrl" type="text" value="https://alphaxiv--tinyrecursive-eval-predict-dev.modal.run/" style="width:440px" />
+  <label for="predictUrl">Predict URL:</label>
+  <input id="predictUrl" type="text" value="/predict" style="width:440px" />
 
     <label for="exampleIndex">Example index:</label>
     <input id="exampleIndex" type="number" value="0" min="0" style="width:80px" />
@@ -39,6 +39,20 @@
   <div id="legendHolder" style="margin-top:10px"></div>
 
   <script>
+  // Auto-fill predict URL to same-origin /predict if value looks empty or whitespace
+  (function initDefaultPredictUrl() {
+    try {
+      const el = document.getElementById('predictUrl');
+      const v = (el && el.value || '').trim();
+      if (!v || v === '/') {
+        el.value = (window.location.origin || '') + '/predict';
+      } else if (v.startsWith('/')) {
+        // If user kept a relative path, expand to absolute using current origin
+        el.value = (window.location.origin || '') + v;
+      }
+    } catch (e) { /* no-op */ }
+  })();
+
   function renderGridToCanvas(grid, scale=18) {
     const rows = grid.length;
     const cols = grid[0].length;

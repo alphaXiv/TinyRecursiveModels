@@ -38,6 +38,15 @@ from pretrain import (
     PretrainConfig,
 )
 
+# Prefer new TF32 API controls to avoid deprecation warnings and ensure predictable math.
+try:
+    # Use strict IEEE FP32 by default for matmul to prioritize correctness.
+    # Change to 'tf32' if you prefer TF32 acceleration.
+    torch.backends.cuda.matmul.fp32_precision = 'ieee'
+except Exception:
+    # Backend may not be available on CPU-only or some environments.
+    pass
+
 
 def parse_args():
     """Parse CLI arguments for the evaluation runner.
@@ -79,6 +88,11 @@ def main():
     - On rank 0, print metrics and per-run Wilson 95% CI for accuracy and exact_accuracy when possible
     """
     args = parse_args()
+
+    # Ensure we skip torch.compile() for evaluation to prevent expensive Inductor compilation
+    # and potential long startup times under torchrun. The training code compiles unless this
+    # environment variable is present.
+    os.environ.setdefault('DISABLE_COMPILE', '1')
 
     # Distributed init (if running under torchrun)
     RANK = 0
@@ -321,6 +335,22 @@ def main():
                     print(f"    -> approx: {mid_pct:.2f} ± {half_pct:.2f} %")
         except Exception as _e:
             print(f"Note: Failed to compute Wilson CI: {_e}")
+
+        # ARC pass@k Wilson CI using pooled per-example stats if provided by evaluator
+        try:
+            md = cast(dict, metrics)
+            if isinstance(md, dict) and 'ARC/example_N' in md:
+                n_arc = int(float(md['ARC/example_N']))
+                for key, val in md.items():
+                    if isinstance(key, str) and key.startswith('ARC/example_pass@'):
+                        p = float(val)
+                        lb, ub = wilson_ci(p, n_arc)
+                        print(f"  {key} 95% Wilson CI [{lb*100:.2f}%, {ub*100:.2f}%] (N={n_arc})")
+                        mid_pct = (lb + ub) * 50.0
+                        half_pct = (ub - lb) * 50.0
+                        print(f"    -> approx: {mid_pct:.2f} ± {half_pct:.2f} %")
+        except Exception as _e:
+            print(f"Note: Failed to compute ARC pass@k Wilson CI: {_e}")
 
 
 if __name__ == '__main__':
