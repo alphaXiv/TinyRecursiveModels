@@ -292,7 +292,7 @@ def _get_realtime_model(task: str, model: str | None):
         # ckpt_path = os.path.join(repo_dir, "data", "sudoku-extreme-full-weights",
         #                          "step_39060_sudoku_epoch_60k" if safe_model=="mlp" else "step_32550_sudoku_50k_epoch_attn_type")
     else:
-        ckpt_path = os.path.join(repo_dir, "data", "arc-agi1-weights", "step_259320_attn_arc_ag1_l6_h3")
+        ckpt_path = os.path.join(repo_dir, "data", "arc-agi1-weights", "step_259320_arc_ag1_attn_type_h3l4")
 
     # Build a minimal object with the attribute expected by load_checkpoint
     _load_checkpoint_compat(act, ckpt_path)
@@ -583,7 +583,7 @@ def _bootstrap_repo_and_weights(repo_dir: str = "/data/repo") -> dict:
     os.makedirs(arc_dir, exist_ok=True)
     arc_path = hf_hub_download(
         repo_id="YuvrajSingh9886/arc_agi_1_trm_model",
-        filename="step_259320_attn_arc_ag1_l6_h3",
+        filename="step_259320_arc_ag1_attn_type_h3l4",
         local_dir=arc_dir,
     )
     results["arc_attn"] = arc_path
@@ -905,6 +905,11 @@ def _do_run_eval_arc(dataset_path: str | None = None,
     repo_dir = _ensure_repo()
     os.chdir(repo_dir)
 
+    # Ensure we do NOT use torch.compile during eval; compiled models introduce
+    # a '_orig_mod.' prefix in state_dict keys which doesn't match checkpoints
+    # we want to load without compiling.
+    os.environ.setdefault("DISABLE_COMPILE", "1")
+
     # Patch ARC evaluator in the cloned repo if it's using numba@njit crop
     try:
         arc_eval_path = os.path.join(repo_dir, "evaluators", "arc.py")
@@ -936,7 +941,7 @@ def _do_run_eval_arc(dataset_path: str | None = None,
         try:
             ckpt_path = _resolve_checkpoint(arc_dir, prefer_attn=True)
         except Exception:
-            ckpt_path = os.path.join(arc_dir, "step_259320_attn_arc_ag1_l6_h3")
+            ckpt_path = os.path.join(arc_dir, "step_259320_arc_ag1_attn_type_h3l4")
     # Dataset dir default
     if dataset_path:
         dataset_dir = dataset_path

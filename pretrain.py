@@ -167,8 +167,14 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
         model: nn.Module = model_cls(model_cfg)
         print(model)
         model = loss_head_cls(model, **config.arch.loss.__pydantic_extra__)  # type: ignore
-        if "DISABLE_COMPILE" not in os.environ:
-            model = torch.compile(model)  # type: ignore
+        # Default to NOT compiling unless explicitly opted-in. This avoids
+        # torch.compile wrapping that introduces the "_orig_mod." prefix in
+        # state_dict keys and causes checkpoint mismatches at load time.
+        if os.environ.get("ENABLE_COMPILE", "0") == "1":
+            try:
+                model = torch.compile(model)  # type: ignore
+            except Exception as _e:
+                print("torch.compile failed; proceeding without compilation:", _e)
 
         # Load checkpoint
         if rank == 0:
@@ -298,49 +304,40 @@ def load_checkpoint(model: nn.Module, config: PretrainConfig):
         # Load state dict
         state_dict = torch.load(config.load_checkpoint, map_location="cuda")
 
-        # Preprocess keys: ensure model-saving wrapper prefix exists so older
-        # training checkpoints that stored params under "_orig_mod.model.*"
-        # are present. Instead of removing, add the expected prefix when it
-        # is missing (but don't overwrite already-present prefixed keys).
-        def preprocess_state_dict_keys(sd: dict) -> dict:
-            new_sd = {}
+        # Always strip compile/DataParallel style prefixes so keys match the
+        # non-compiled module. We won't be using torch.compile in eval.
+        def _strip_prefixes(sd: dict) -> dict:
+            out: dict[str, torch.Tensor] = {}
             for k, v in sd.items():
-                # Normalize accidental leading dot
-                key = k[1:] if k.startswith('.') else k
+                key = k
+                if isinstance(key, str):
+                    # remove a leading '.' if present
+                    if key.startswith('.'):
+                        key = key[1:]
+                    # known wrapper prefixes to drop
+                    for pref in ("_orig_mod.", "_orig._mod.", "module."):
+                        if key.startswith(pref):
+                            key = key[len(pref):]
+                            break
+                out[key] = v
+            return out
 
-                # If key already contains one of the known wrapper variants,
-                # keep it as-is.
-                if any(pat in key for pat in ('_orig_mod.', '_orig._mod.', '_orig_mod.model.', '_orig._mod.model.')):
-                    new_sd[key] = v
-                    continue
-
-                # Build the prefixed form the model expects
-                prefixed = f"_orig_mod.{key}"
-
-                # If a prefixed key already exists in the original sd, prefer it
-                # (avoid clobber). Otherwise add the prefixed key.
-                if prefixed in sd:
-                    # prefixed version is already in original state dict; skip adding duplicate
-                    new_sd[prefixed] = sd[prefixed]
-                else:
-                    new_sd[prefixed] = v
-
-            return new_sd
-
-        state_dict = preprocess_state_dict_keys(state_dict)
+        state_dict = _strip_prefixes(state_dict)
 
         # Resize and reset puzzle emb if needed
-        puzzle_emb_name = "_orig_mod.model.inner.puzzle_emb.weights"
-        expected_shape: torch.Size = model.model.puzzle_emb.weights.shape  # type: ignore
-        if puzzle_emb_name in state_dict:
-            puzzle_emb = state_dict[puzzle_emb_name]
-            if puzzle_emb.shape != expected_shape:
-                print(f"Resetting puzzle embedding as shape is different. Found {puzzle_emb.shape}, Expected {expected_shape}")
-                # Re-initialize using mean
-                state_dict[puzzle_emb_name] = (
-                    torch.mean(puzzle_emb, dim=0, keepdim=True).expand(expected_shape).contiguous()
-                )
-        model.load_state_dict(state_dict, assign=True)
+        try:
+            expected_shape: torch.Size = model.model.puzzle_emb.weights.shape  # type: ignore
+            puzzle_emb_name = "model.inner.puzzle_emb.weights"
+            if puzzle_emb_name in state_dict:
+                puzzle_emb = state_dict[puzzle_emb_name]
+                if getattr(puzzle_emb, 'shape', None) != expected_shape:
+                    print(f"Resetting puzzle embedding as shape is different. Found {getattr(puzzle_emb, 'shape', None)}, Expected {expected_shape}")
+                    state_dict[puzzle_emb_name] = (
+                        torch.mean(puzzle_emb, dim=0, keepdim=True).expand(expected_shape).contiguous()
+                    )
+        except Exception:
+            pass
+    model.load_state_dict(state_dict, assign=True)
 
 
 def compute_lr(base_lr: float, config: PretrainConfig, train_state: TrainState):
