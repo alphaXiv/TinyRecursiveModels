@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # Create a persistent volume for repo and data
-volume = modal.Volume.from_name("tinyrecursive-data", create_if_missing=True)
+volume = modal.Volume.from_name("tinyrecursive-data", create_if_missing=True) 
 
 NO_GPU=1
 
@@ -361,7 +361,7 @@ def _postprocess_preds_for_task(task: str, meta: dict, pred_tokens_1d: list[int]
         return g.astype(int).tolist()
     return arr.astype(int).tolist()
 
-@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2")
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:{}".format(NO_GPU))
 @modal.fastapi_endpoint(docs=True, method="POST")
 def predict_realtime(
     grid: object | None = Body(default=None),
@@ -960,7 +960,8 @@ def _do_run_eval_arc(dataset_path: str | None = None,
 
     eval_script = _get_eval_script_path(repo_dir)
     cmd = [
-        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        # "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
+        "torchrun", "--nproc_per_node=8", eval_script,
         "--checkpoint", ckpt_path,
         "--dataset", dataset_dir,
         "--outdir", out_dir,
@@ -1014,7 +1015,7 @@ def prepare_dataset(include_maze: bool = True,
     )
 
 
-@app.function(image=IMAGE, timeout=3600, gpu="A100:2",volumes={"/data": volume})
+@app.function(image=IMAGE, timeout=3600, gpu="A100:{}".format(NO_GPU),volumes={"/data": volume})
 @modal.fastapi_endpoint(docs=True)
 def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out", batch_size: int = 256):
     """Run evaluation on the mounted test dataset and save predictions to persistent volume.
@@ -1427,7 +1428,7 @@ def predict_job(grid: object = None, index: int | None = None, file: str | None 
 
  
 
-@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:{}".format(NO_GPU), timeout=3600)
 def run_eval_sudoku_job(model: str = "mlp",
                         dataset_path: str | None = None,
                         batch_size: int = 256,
@@ -1476,7 +1477,7 @@ def run_eval_sudoku(model: str = "mlp",
 
  
 
-@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:2", timeout=3600)
+@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:{}".format(NO_GPU), timeout=3600)
 def run_eval_maze_job(batch_size: int = 256,
                       one_batch: bool = False,
                       checkpoint: str | None = None):
