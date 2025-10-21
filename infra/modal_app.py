@@ -34,7 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Create a persistent volume for repo and data
 volume = modal.Volume.from_name("tinyrecursive-data", create_if_missing=True) 
 
-NO_GPU=1
+NO_GPU=2
 
 IMAGE = (
     modal.Image.debian_slim()
