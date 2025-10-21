@@ -995,84 +995,6 @@ def prepare_dataset(include_maze: bool = True,
     )
 
 
-@app.function(image=IMAGE, timeout=3600, gpu="A100:{}".format(NO_GPU),volumes={"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def eval_test(checkpoint_path: str = "data/maze-30x30-hard-1k-weights/step_32550", dataset_path: str = "data/maze-30x30-hard-1k", out_dir: str = "out", batch_size: int = 256):
-    """Run evaluation on the mounted test dataset and save predictions to persistent volume.
-
-    This will raise on any failure (no fallback behavior) as requested.
-    """
-    repo_dir = _ensure_repo()
-
-    os.chdir(repo_dir)
-
-    local_out = os.path.join(repo_dir, out_dir)
-    os.makedirs(local_out, exist_ok=True)
-    
-    eval_script = _get_eval_script_path(repo_dir)
-    cmd = [
-        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--checkpoint", os.path.join(repo_dir, checkpoint_path),
-        "--dataset", os.path.join(repo_dir, dataset_path),
-        "--outdir", local_out,
-        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only",
-        "--bf16",
-        "--global-batch-size", str(int(batch_size)),
-    ]
-    print(f"Running evaluation command: {' '.join(cmd)}")
-    # Run and raise on failure
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
-    return {"status": "Evaluation completed", "output_dir": local_out, "result": result}
-
-
-# @app.function(image=IMAGE, gpu="T4", volumes={"/data": volume}, timeout=3600)
-@modal.fastapi_endpoint(docs=True)
-def run_eval_local(checkpoint_path: str="data/maze-30x30-hard-1k", dataset_path: str = "maze-30x30-hard-1k-weights/step_32550", out_dir: str = "out", batch_size: int = 256):
-    """Run evaluation locally on mounted repo data.
-
-    Args:
-      checkpoint_path: path to checkpoint file in repo
-      dataset_path: path to dataset directory in repo
-      out_dir: output directory
-
-    Returns:
-      dict with results
-    """
-    
-    # Use persistent data directory
-    repo_url = "https://github.com/YuvrajSingh-mist/TinyRecursiveModels.git"
-    repo_dir = "/data/repo"
-    
-    if not os.path.exists(repo_dir):
-        print(f"Cloning repo from {repo_url}...")
-        subprocess.run(["git", "clone", repo_url, repo_dir], check=True)
-    
-    # Change to repo directory
-    os.chdir(repo_dir)
- 
-    # Set output dir
-    local_out = os.path.join(repo_dir, out_dir)
-    os.makedirs(local_out, exist_ok=True)
-    # Run evaluation using subprocess with torchrun for multi-GPU
-    eval_script = _get_eval_script_path(repo_dir)
-    cmd = [
-        "torchrun", "--nproc_per_node={}".format(NO_GPU), eval_script,
-        "--checkpoint", os.path.join(repo_dir, checkpoint_path),
-        "--dataset", os.path.join(repo_dir, dataset_path),
-        "--outdir", local_out,
-        "--eval-save-outputs", "inputs", "labels", "puzzle_identifiers", "preds",
-        "--eval-only",
-        "--bf16",
-        "--global-batch-size", str(int(batch_size)),
-    ]
-    print(f"Running command: {' '.join(cmd)}")
-    result = subprocess.run(cmd, stdout=sys.stdout, stderr=sys.stderr, check=True)
-    print("Evaluation completed.")
-
-    metrics = {}  # No metrics returned from subprocess
-
-    return {'message': 'Evaluation completed', 'output_dir': out_dir}
 
 
 def _do_predict(grid: object | None = None, index: int | None = None, file: str | None = None, task: str | None = None, model: str | None = None, run: str | None = None):
@@ -1387,17 +1309,6 @@ def predict(
         return JSONResponse(content=body, status_code=500, headers=headers)
 
 
-@app.function(image = IMAGE, volumes= {"/data": volume})
-@modal.fastapi_endpoint(docs=False, method="OPTIONS")
-def predict_options():
-    """Preflight responder for predict endpoint to satisfy CORS in browsers."""
-    headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        "Access-Control-Max-Age": "86400",
-    }
-    return Response(status_code=204, headers=headers)
 
 
 @app.function(image=IMAGE, volumes={"/data": volume})
@@ -1501,21 +1412,21 @@ def run_eval_arc(dataset_path: str | None = None,
     return run_eval_arc_job.remote(dataset_path=dataset_path, batch_size=batch_size, one_batch=one_batch, checkpoint=checkpoint)  # type: ignore
 
 
-@app.function(volumes={"/data": volume})
-@modal.fastapi_endpoint(docs=True)
-def get_maze_visualizer():
-    """Serve the simple maze-only visualizer HTML."""
-    repo_dir = _ensure_repo()
-    os.chdir(repo_dir)
-    html_path = os.path.join(repo_dir, "maze_visualizer.html")
+# @app.function(volumes={"/data": volume})
+# @modal.fastapi_endpoint(docs=True)
+# def get_maze_visualizer():
+#     """Serve the simple maze-only visualizer HTML."""
+#     repo_dir = _ensure_repo()
+#     os.chdir(repo_dir)
+#     html_path = os.path.join(repo_dir, "maze_visualizer.html")
 
-    if not os.path.exists(html_path):
-        raise FileNotFoundError(f"Maze visualizer HTML not found at {html_path}; ensure repo is cloned")
+#     if not os.path.exists(html_path):
+#         raise FileNotFoundError(f"Maze visualizer HTML not found at {html_path}; ensure repo is cloned")
 
-    with open(html_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+#     with open(html_path, 'r', encoding='utf-8') as f:
+#         content = f.read()
 
-    return Response(content, media_type="text/html")
+#     return Response(content, media_type="text/html")
 
 
 @app.function(volumes={"/data": volume})

@@ -51,30 +51,36 @@ function MazeCanvas({ grid, scale = 12, onClick, theme }) {
     const isDark = theme === 'dark' || document.documentElement.getAttribute('data-theme') === 'dark';
 
     const valueToColor = (v) => {
+      // Requested mapping:
+      // 1 = wall → black (#000000)
+      // 2 = open → white/light gray (#FFFFFF or #EEEEEE)
+      // 3 = start → red (#FF0000)
+      // 4 = goal → green (#00FF00)
+      // 5 = predicted path → blue (#1E90FF)
+      // 0 = pad → white (#FFFFFF)
+
+      const lightPalette = {
+        0: '#FFFFFF',    // pad
+        1: '#000000',    // wall
+        2: '#EEEEEE',    // open
+        3: '#FF0000',    // start (red)
+        4: '#00FF00',    // goal (green)
+        5: '#1E90FF',    // predicted path (blue)
+      };
+
+      const darkPalette = {
+        0: '#FFFFFF',    // pad - keep white for clarity
+        1: '#000000',    // wall
+        2: '#FFFFFF',    // open - use white in dark mode too so it contrasts with walls
+        3: '#FF0000',    // start (red)
+        4: '#00FF00',    // goal (green)
+        5: '#1E90FF',    // predicted path (blue)
+      };
+
       if (isDark) {
-        // Dark mode palette
-        const darkPalette = {
-          0: '#FFFFFF',      // White (empty/unused)
-          1: '#000000',      // Black (walls)
-          2: '#64748b',      // Slate gray (open spaces) - more distinct from black
-          3: '#00AA00',      // Green (goal)
-          4: '#FFFF00',      // Yellow (start)
-          5: '#1E90FF',      // Blue (solution path)
-          6: '#FF00FF',      // Magenta
-        };
-        return darkPalette[v] || '#64748b';
+        return darkPalette[v] || '#FFFFFF';
       } else {
-        // Light mode palette
-        const lightPalette = {
-          0: '#FFFFFF',      // White
-          1: '#000000',      // Black (walls)
-          2: '#EEEEEE',      // Light gray (open spaces)
-          3: '#00AA00',      // Green (goal)
-          4: '#FFFF00',      // Yellow (start)
-          5: '#1E90FF',      // Blue (solution path)
-          6: '#FF00FF',      // Magenta
-        };
-        return lightPalette[v] || '#CCCCCC';
+        return lightPalette[v] || '#FFFFFF';
       }
     };
 
@@ -165,31 +171,78 @@ function MazePlayground() {
     return () => observer.disconnect();
   }, []);
 
+  // Mode for moving start/goal: null | 'start' | 'goal'
+  const [moveMode, setMoveMode] = useState(null);
+
   const handleCellClick = (row, col) => {
     const newMaze = inputMaze.map(r => [...r]);
-    if (newMaze[row]?.[col] !== undefined) {
-      newMaze[row][col] = newMaze[row][col] === 1 ? 2 : 1;
+    if (newMaze[row]?.[col] === undefined) return;
+
+    // If user is in move mode, place start or goal at clicked cell and
+    // clear the previous one (set to open=2). Then exit move mode.
+    if (moveMode === 'start') {
+      // Clear any existing start (3) to open (2)
+      for (let r = 0; r < newMaze.length; r++) {
+        for (let c = 0; c < newMaze[0].length; c++) {
+          if (newMaze[r][c] === 3) newMaze[r][c] = 2;
+        }
+      }
+      // Place start unless it's a wall (1) - convert it to start regardless
+      newMaze[row][col] = 3;
       setInputMaze(newMaze);
+      setMoveMode(null);
+      return;
     }
+
+    if (moveMode === 'goal') {
+      // Clear any existing goal (4) to open (2)
+      for (let r = 0; r < newMaze.length; r++) {
+        for (let c = 0; c < newMaze[0].length; c++) {
+          if (newMaze[r][c] === 4) newMaze[r][c] = 2;
+        }
+      }
+      newMaze[row][col] = 4;
+      setInputMaze(newMaze);
+      setMoveMode(null);
+      return;
+    }
+
+    // Normal click behavior: toggle walls (1) and open (2).
+    // Do NOT allow clicks to change start(3) or goal(4) into walls.
+    const current = newMaze[row][col];
+    if (current === 3 || current === 4) {
+      // no-op: prevent turning start/goal into walls
+      return;
+    }
+
+    newMaze[row][col] = current === 1 ? 2 : 1;
+    setInputMaze(newMaze);
   };
 
   const handleGenerate = async () => {
     setIsGenerating(true);
-    
+
     try {
-      const response = await fetch(
-        'https://alphaxiv--tinyrecursive-eval-predict-realtime.modal.run',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            task: 'maze',
-            grid: inputMaze,
-          }),
-        }
-      );
+      // Simple behavior: snapshot the current input maze and send it directly
+      // to the realtime predict endpoint with cache-busting. No extra
+      // normalization or complex checks — what you see is what we send.
+      const payloadGrid = inputMaze.map(row => [...row]);
+
+      const requestId = `${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+      const url = `https://alphaxiv--tinyrecursive-eval-predict-realtime.modal.run?_r=${requestId}`;
+
+      console.info('Sending payload to realtime predict:', { requestId, grid: payloadGrid });
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache, no-store',
+          'Pragma': 'no-cache',
+          'X-Request-Id': requestId,
+        },
+        body: JSON.stringify({ task: 'maze', grid: payloadGrid, request_id: requestId }),
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -250,6 +303,23 @@ function MazePlayground() {
           </svg>
           {isGenerating ? 'Generating...' : 'Generate Solution'}
         </button>
+  <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '1rem'}}>
+          <button
+            className="generate-button"
+            onClick={() => setMoveMode(moveMode === 'start' ? null : 'start')}
+            type="button"
+          >
+            {moveMode === 'start' ? 'Cancel Move Start' : 'Move Start'}
+          </button>
+
+          <button
+            className="generate-button"
+            onClick={() => setMoveMode(moveMode === 'goal' ? null : 'goal')}
+            type="button"
+          >
+            {moveMode === 'goal' ? 'Cancel Move Goal' : 'Move Goal'}
+          </button>
+        </div>
       </div>
 
       <div className="mazes-wrapper">
@@ -277,28 +347,32 @@ function MazePlayground() {
 
       <div className="legend">
         <h4 className="legend-title">Legend</h4>
-        <div className="legend-items">
-          <div className="legend-item">
-            <div className="legend-color" style={{ backgroundColor: '#000000' }}></div>
-            <span>Wall</span>
+          <div className="legend-items">
+            <div className="legend-item">
+              <div className="legend-color" style={{ backgroundColor: '#000000' }}></div>
+              <span>1 = Wall</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color" style={{ backgroundColor: theme === 'dark' ? '#FFFFFF' : '#EEEEEE' }}></div>
+              <span>2 = Open</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color" style={{ backgroundColor: '#FF0000' }}></div>
+              <span>3 = Start</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color" style={{ backgroundColor: '#00FF00' }}></div>
+              <span>4 = Goal</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color" style={{ backgroundColor: '#1E90FF' }}></div>
+              <span>5 = Predicted Path</span>
+            </div>
+            <div className="legend-item">
+              <div className="legend-color" style={{ backgroundColor: '#FFFFFF' }}></div>
+              <span>0 = Pad</span>
+            </div>
           </div>
-          <div className="legend-item">
-            <div className="legend-color" style={{ backgroundColor: theme === 'dark' ? '#64748b' : '#EEEEEE' }}></div>
-            <span>Open</span>
-          </div>
-          <div className="legend-item">
-            <div className="legend-color" style={{ backgroundColor: '#FFFF00' }}></div>
-            <span>Start</span>
-          </div>
-          <div className="legend-item">
-            <div className="legend-color" style={{ backgroundColor: '#00AA00' }}></div>
-            <span>Goal</span>
-          </div>
-          <div className="legend-item">
-            <div className="legend-color" style={{ backgroundColor: '#1E90FF' }}></div>
-            <span>Solution Path</span>
-          </div>
-        </div>
       </div>
     </div>
   );
