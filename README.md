@@ -18,9 +18,9 @@ This work came to be after I learned about the recent innovative Hierarchical Re
   <sub>TRM iteratively updates latent z and answer y.</sub>
   </p>
 
-## TL;DR quickstart
+## Quickstart
 
-Copy-paste these on macOS zsh. For GPUs, prefer Linux; commands are the same.
+
 
 ```bash
 # 1) Create env (Python 3.10+ recommended)
@@ -80,7 +80,6 @@ Training is configured via Hydra. CLI overrides like `arch.L_layers=2` are appli
 Tips
 - Set `+run_name=<name>` to label runs; checkpoints land in `checkpoints/<Project>/<Run>/`.
 - Use `torchrun` for multi-GPU. Replace `--nproc-per-node` with your GPU count.
-- macOS is fine for dataset prep and evaluation on CPU; training targets Linux GPUs.
 
 ### ARC-AGI-1 (attention, multi-GPU)
 
@@ -262,34 +261,5 @@ Open the HTML pages directly in a browser:
 - Checkpoints and EMA: training saves EMA by default when `ema=True`; the eval script applies EMA unless disabled.
 - Missing optimizer: install `adam-atan2` (see quickstart) for training. Evaluation-only runs do not require it.
 
-## Citation
-
-If you find this work useful, please cite:
-
-```bibtex
-@misc{jolicoeurmartineau2025morerecursivereasoningtiny,
-      title={Less is More: Recursive Reasoning with Tiny Networks}, 
-      author={Alexia Jolicoeur-Martineau},
-      year={2025},
-      eprint={2510.04871},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2510.04871}, 
-}
-```
-
-and the Hierarchical Reasoning Model (HRM):
-
-```bibtex
-@misc{wang2025hierarchicalreasoningmodel,
-      title={Hierarchical Reasoning Model}, 
-      author={Guan Wang and Jin Li and Yuhao Sun and Xing Chen and Changling Liu and Yue Wu and Meng Lu and Sen Song and Yasin Abbasi Yadkori},
-      year={2025},
-      eprint={2506.21734},
-      archivePrefix={arXiv},
-      primaryClass={cs.AI},
-      url={https://arxiv.org/abs/2506.21734}, 
-}
-```
 
 This code is based on the Hierarchical Reasoning Model [code](https://github.com/sapientinc/HRM) and the Hierarchical Reasoning Model Analysis [code](https://github.com/arcprize/hierarchical-reasoning-model-analysis).
