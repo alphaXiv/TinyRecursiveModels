@@ -98,7 +98,7 @@ This variant is responsible for the paper's state-of-the-art claim on Sudoku-Ext
 The best-reproduced result of 79.37% falls short of the paper's claim by a significant margin of 8 percentage points. The experimental report notes that the longer training run to 60k epochs resulted in lower accuracy, speculating that overfitting may be a factor. This discrepancy suggests that achieving the peak result is highly sensitive and was not successfully replicated.
 
 ![Sudoku-Extreme TRM-MLP Claim vs Achieved](reports/plots/claims_vs_achieved_trm-mlp-variant.png)
-
+<!-- 
 **Table 2. Comparison of Claimed vs. Reproduced Results**
 
 | Benchmark        | Model Variant   | Claimed Accuracy (%) | Reproduced Accuracy (%) |
@@ -106,7 +106,7 @@ The best-reproduced result of 79.37% falls short of the paper's claim by a signi
 | **Maze-Hard**    | TRM-Attention   | 85.3                  | 83.87                    |
 | **ARC-AGI-1**    | TRM-Attention   | 44.6                  | 43.00                    |
 | **Sudoku-Extreme** | TRM-Attention | 74.7                  | 73.66                    |
-| **Sudoku-Extreme** | TRM-MLP       | 87.4                  | 79.37                    |
+| **Sudoku-Extreme** | TRM-MLP       | 87.4                  | 79.37                    | -->
 
 The included charts from the experimental reports show standard training curves, with validation accuracy plateauing as training progresses. The Sudoku-Extreme MLP run in particular shows validation accuracy peaking and then declining, supporting the hypothesis of overfitting mentioned in the report.
 
