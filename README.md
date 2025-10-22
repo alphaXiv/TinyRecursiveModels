@@ -262,6 +262,12 @@ If you'd like to download the pretrained model weights used in experiments, they
 - Keep seeds at defaults (`seed=0` in `config/cfg_pretrain.yaml`); runs are deterministic modulo CUDA kernels.
 - Evaluate with `scripts/run_eval_only.py` and report `exact_accuracy` and per-task metrics. The script will compute Wilson 95% CI when dataset metadata is present.
 
+## Reproduction Report
+
+For detailed analysis of independent reproduction attempts and comparison with published claims, see [REPORT.md](REPORT.md).
+
+This report includes evaluation results, performance comparisons, and insights from reproducing the TRM paper's results across Maze-Hard, ARC-AGI-1, and Sudoku-Extreme benchmarks.
+
 ## Troubleshooting
 
 - PyTorch install: pick wheels matching your CUDA; on macOS (CPU/MPS) training will be very slow — prefer Linux + NVIDIA GPU for training.
