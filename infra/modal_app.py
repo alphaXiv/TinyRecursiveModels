@@ -341,8 +341,10 @@ def _postprocess_preds_for_task(task: str, meta: dict, pred_tokens_1d: list[int]
         return g.astype(int).tolist()
     return arr.astype(int).tolist()
 
-@app.function(image=IMAGE, volumes={"/data": volume}, gpu="A100:{}".format(NO_GPU))
+
+@app.function(min_containers=5, scaledown_window=600, timeout = 30 * 60, image=IMAGE, volumes={"/data": volume}, gpu="A100:{}".format(NO_GPU))
 @modal.fastapi_endpoint(docs=True, method="POST")
+@modal.concurrent(max_inputs=120, target_inputs=100)
 def predict_realtime(
     grid: object | None = Body(default=None),
     task: str | None = Body(default=None),
