@@ -50,7 +50,7 @@ The Maze-Hard task, which involves finding long paths in 30x30 grids, showed a h
 
 This result is well within the margin of error and closely aligns with the paper's claim, confirming the model's strong performance on this spatial reasoning task.
 
-![Maze-Hard Claim vs Achieved](reports/plots/claims_vs_achieved_1-maze-hard.png)
+![Maze-Hard Claim vs Achieved](reports/plots/claims_vs_achieved_1-maze-hard.png){width=600px}
 
 ### 2) The Abstraction and Reasoning Challenge (ARC)
 
@@ -69,7 +69,7 @@ The first run, with H-3, L-6 results in pass@2 as 52.75% ± 3.09%, following the
 
 Performing a one-tailed z test and calculating the p value (<0.005 or 95% confidence) confirmed that H-3, L-6 variant is indeed significant (by performance in terms of metric) compared to H-3, L-4 model.
 
-![ARC-AGI-1 Claim vs Achieved](reports/plots/claims_vs_achieved_2-the-abstraction-and-reasoning-challenge-arc.png)
+![ARC-AGI-1 Claim vs Achieved](reports/plots/claims_vs_achieved_2-the-abstraction-and-reasoning-challenge-arc.png){width=600px}
 
 ### 3) Sudoku-Extreme
 
@@ -85,7 +85,7 @@ The reproduction report documents two runs with different epoch counts. The long
 
 The result from the 60k epoch run is less than 1.1 percentage points from the target, confirming that the performance of the attention-based model is reproducible.
 
-![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/image.png)
+![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/claims_vs_achieved_trm-attention-variant.png)
 
 #### TRM-MLP Variant:
 
