@@ -102,8 +102,16 @@ The included charts from the experimental reports show standard training curves,
 
 **Train curves (MLP - epochs-60k)**
 
+![Training curves (MLP - epochs- 50k vs 60k)](assets/images/train.png)
 
-**Val curves**
+*Figure: Training curves for the MLP run  - 60k epochs (red) vs 50k epochs (blue).*
+
+
+**Val curves (MLP - epochs-60k vs 50k)**
+
+![Validation curves (MLP - epochs- 60k vs 50k)](assets/images/val.png)
+
+*Figure: Validation curves for the MLP run - 60k epochs (red) vs 50k epochs (blue).*
 
 
 
