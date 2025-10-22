@@ -61,6 +61,7 @@ def parse_files(paths: List[str]) -> List[Tuple[str, float, float, Optional[floa
         achieveds.sort(key=lambda x: x[0])
         lines = text.splitlines()
 
+        print("Found achieveds:", achieveds)
         for cpos, cval in claims:
             # pick the achieved entry with accuracy closest to the claim value
             after = [a for a in achieveds if a[0] >= cpos]
@@ -127,7 +128,7 @@ def plot_per_item(items, outdir: str):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--files', nargs='+', default=['REPORT.md', 'README.md'], help='Markdown files to parse')
+    parser.add_argument('--files', nargs='+', default=['REPORT.md'], help='Markdown files to parse')
     parser.add_argument('--outdir', default='reports/plots', help='Output directory for plots')
     parser.add_argument('--show', action='store_true', help='Show plots interactively')
     args = parser.parse_args()
