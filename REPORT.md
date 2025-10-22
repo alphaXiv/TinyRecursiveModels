@@ -1,7 +1,7 @@
-# Reproducing the TRM Paper: A Report on "Less is More: Recursive Reasoning with Tiny Networks"
+# Reproducing the TRM Pape:
+## A Report on "Less is More: Recursive Reasoning with Tiny Networks"
 
-Yuvraj Singh  
-Created on October 20 | Last edited on October 21  
+- Yuvraj Singh and team (@alphaXiv)
 
 ## TL;DR
 
@@ -52,7 +52,9 @@ This result is well within the margin of error and closely aligns with the paper
 
 ### 2) The Abstraction and Reasoning Challenge (ARC)
 
-The Abstraction and Reasoning Challenge (ARC) is a key benchmark for abstract reasoning. The reproduction report for ARC-AGI-1 documents two runs. The second run, using a configuration aligned with the author's official repository, is most relevant for comparison (H-3,L-4). We, though not explicitly mentioned in the paper, that we have to look at pass@2 here as the paper stated that 'The final score is computed as the accuracy over all test inputs from two attempts to produce the correct output grid.'
+The Abstraction and Reasoning Challenge (ARC) is a key benchmark for abstract reasoning. The reproduction report for ARC-AGI-1 documents two runs. The second run, using a configuration aligned with the author's official repository, is most relevant for comparison (H-3,L-4). 
+
+We, though not explicitly mentioned in the paper, have to look at pass@2 here as the paper stated that 'The final score is computed as the accuracy over all test inputs from two attempts to produce the correct output grid.'
 
 We only tested and made an effort to reproduce the **attention** variant with **H-3**, **L-6**.
 
@@ -125,6 +127,5 @@ However, a notable discrepancy was observed for the state-of-the-art result on t
 
 In summary, the TRM paper is robust and its core contributions are validated across multiple benchmarks and model configurations. The model represents a powerful and parameter-efficient approach to complex reasoning. Future work should focus on a deeper analysis to identify the specific conditions required to replicate the peak performance on the Sudoku-Extreme benchmark with the MLP architecture.
 
-Created with 🟡 on Weights & Biases.
 
 ---
