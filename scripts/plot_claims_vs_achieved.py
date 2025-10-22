@@ -62,12 +62,12 @@ def parse_files(paths: List[str]) -> List[Tuple[str, float, float, Optional[floa
         lines = text.splitlines()
 
         for cpos, cval in claims:
-            # pick the next achieved entry after the claim if possible, else the nearest
+            # pick the achieved entry with accuracy closest to the claim value
             after = [a for a in achieveds if a[0] >= cpos]
             if after:
-                apos, aval, aerr = after[0]
+                apos, aval, aerr = min(after, key=lambda x: abs(x[1] - cval))
             else:
-                apos, aval, aerr = min(achieveds, key=lambda a: abs(a[0] - cpos))
+                apos, aval, aerr = min(achieveds, key=lambda x: abs(x[1] - cval))
 
             # map character offset to line index for labeling
             cum = 0
