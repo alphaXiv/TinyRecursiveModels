@@ -85,7 +85,7 @@ The reproduction report documents two runs with different epoch counts. The long
 
 The result from the 60k epoch run is less than 1.1 percentage points from the target, confirming that the performance of the attention-based model is reproducible.
 
-![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/claims_vs_achieved_trm-attention-variant.png)
+![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/image.png){width=600px}
 
 #### TRM-MLP Variant:
 
@@ -97,7 +97,7 @@ This variant is responsible for the paper's state-of-the-art claim on Sudoku-Ext
 
 The best-reproduced result of 79.37% falls short of the paper's claim by a significant margin of 8 percentage points. The experimental report notes that the longer training run to 60k epochs resulted in lower accuracy, speculating that overfitting may be a factor. This discrepancy suggests that achieving the peak result is highly sensitive and was not successfully replicated.
 
-![Sudoku-Extreme TRM-MLP Claim vs Achieved](reports/plots/claims_vs_achieved_trm-mlp-variant.png)
+![Sudoku-Extreme TRM-MLP Claim vs Achieved](reports/plots/claims_vs_achieved_trm-mlp-variant.png){width=600px}
 <!-- 
 **Table 2. Comparison of Claimed vs. Reproduced Results**
 
