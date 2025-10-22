@@ -85,7 +85,7 @@ The reproduction report documents two runs with different epoch counts. The long
 
 The result from the 60k epoch run is less than 1.1 percentage points from the target, confirming that the performance of the attention-based model is reproducible.
 
-![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/claims_vs_achieved_trm-attention-variant.png)
+![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/image.png)
 
 #### TRM-MLP Variant:
 
