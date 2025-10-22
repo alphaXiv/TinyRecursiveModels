@@ -110,14 +110,14 @@ The best-reproduced result of 79.37% falls short of the paper's claim by a signi
 
 The included charts from the experimental reports show standard training curves, with validation accuracy plateauing as training progresses. The Sudoku-Extreme MLP run in particular shows validation accuracy peaking and then declining, supporting the hypothesis of overfitting mentioned in the report.
 
-**Train curves (MLP - epochs-60k)**
+**Train curves (MLP)**
 
 ![Training curves (MLP - epochs- 50k vs 60k)](assets/images/train.png)
 
 *Figure: Training curves for the MLP run  - 60k epochs (red) vs 50k epochs (blue).*
 
 
-**Val curves (MLP - epochs-60k vs 50k)**
+**Val curves (MLP)**
 
 ![Validation curves (MLP - epochs- 60k vs 50k)](assets/images/val.png)
 
