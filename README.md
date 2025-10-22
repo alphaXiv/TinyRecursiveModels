@@ -247,6 +247,14 @@ Open the HTML pages directly in a browser:
 - `sudoku_visualizer.html`
 - `unified_visualizer.html`
 
+## Pretrained Weights
+
+If you'd like to download the pretrained model weights used in experiments, they are available on Hugging Face:
+
+- Maze (30x30 TRM weights): https://huggingface.co/alphaXiv/trm-model-maze
+- Sudoku (TRM weights): https://huggingface.co/alphaXiv/trm-model-sudoku
+- ARC AGI 1 (TRM attention weights): https://huggingface.co/alphaXiv/trm-model-arc-agi-1
+
 ## Reproducing paper numbers
 
 - Build the exact datasets above (`arc1concept-aug-1000`, `arc2concept-aug-1000`, `maze-30x30-hard-1k`, `sudoku-extreme-1k-aug-1000`).
