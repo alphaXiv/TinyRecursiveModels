@@ -50,6 +50,8 @@ The Maze-Hard task, which involves finding long paths in 30x30 grids, showed a h
 
 This result is well within the margin of error and closely aligns with the paper's claim, confirming the model's strong performance on this spatial reasoning task.
 
+![Maze-Hard Claim vs Achieved](reports/plots/claims_vs_achieved_1-maze-hard.png)
+
 ### 2) The Abstraction and Reasoning Challenge (ARC)
 
 The Abstraction and Reasoning Challenge (ARC) is a key benchmark for abstract reasoning. The reproduction report for ARC-AGI-1 documents two runs. The second run, using a configuration aligned with the author's official repository, is most relevant for comparison (H-3,L-4). 
@@ -67,6 +69,8 @@ The first run, with H-3, L-6 results in pass@2 as 52.75% ± 3.09%, following the
 
 Performing a one-tailed z test and calculating the p value (<0.005 or 95% confidence) confirmed that H-3, L-6 variant is indeed significant (by performance in terms of metric) compared to H-3, L-4 model.
 
+![ARC-AGI-1 Claim vs Achieved](reports/plots/claims_vs_achieved_2-the-abstraction-and-reasoning-challenge-arc.png)
+
 ### 3) Sudoku-Extreme
 
 The Sudoku-Extreme benchmark was tested using both the TRM-Attention and TRM-MLP variants, with multiple training runs reported.
@@ -81,6 +85,8 @@ The reproduction report documents two runs with different epoch counts. The long
 
 The result from the 60k epoch run is less than 1.1 percentage points from the target, confirming that the performance of the attention-based model is reproducible.
 
+![Sudoku-Extreme TRM-Attention Claim vs Achieved](reports/plots/claims_vs_achieved_trm-attention-variant.png)
+
 #### TRM-MLP Variant:
 
 This variant is responsible for the paper's state-of-the-art claim on Sudoku-Extreme. However, the reproduction attempts did not reach the published figure.
@@ -90,6 +96,8 @@ This variant is responsible for the paper's state-of-the-art claim on Sudoku-Ext
 - **Achieved Result (60k epochs)**: 75.57% ± 0.13%
 
 The best-reproduced result of 79.37% falls short of the paper's claim by a significant margin of 8 percentage points. The experimental report notes that the longer training run to 60k epochs resulted in lower accuracy, speculating that overfitting may be a factor. This discrepancy suggests that achieving the peak result is highly sensitive and was not successfully replicated.
+
+![Sudoku-Extreme TRM-MLP Claim vs Achieved](reports/plots/claims_vs_achieved_trm-mlp-variant.png)
 
 **Table 2. Comparison of Claimed vs. Reproduced Results**
 
