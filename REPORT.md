@@ -124,9 +124,6 @@ The included charts from the experimental reports show standard training curves,
 *Figure: Validation curves for the MLP run - 60k epochs (red) vs 50k epochs (blue).*
 
 
-
-
-
 ## Conclusion
 
 The Tiny Recursive Model (TRM) presents a significant and promising direction for efficient reasoning in AI. Our analysis of independent reproduction reports confirms that the central claims of the paper are largely reproducible. The model’s impressive performance on the Maze-Hard and ARC-AGI-1 benchmarks, as well as with the TRM-Attention variant on Sudoku-Extreme, were successfully replicated.
