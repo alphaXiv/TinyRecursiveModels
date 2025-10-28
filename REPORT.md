@@ -1,4 +1,4 @@
-# Reproducing the TRM Pape:
+# Reproducing the TRM Paper:
 ## A Report on "Less is More: Recursive Reasoning with Tiny Networks"
 
 - Yuvraj Singh and team (@alphaXiv)
