@@ -301,8 +301,37 @@ def load_checkpoint(model: nn.Module, config: PretrainConfig):
     if config.load_checkpoint is not None:
         print(f"Loading checkpoint {config.load_checkpoint}")
 
+        checkpoint_path = config.load_checkpoint
+        
+        # Check if this is a HuggingFace repo path (format: "username/repo/filename")
+        if "/" in checkpoint_path and not os.path.exists(checkpoint_path):
+            try:
+                from huggingface_hub import hf_hub_download
+                
+                # Parse HuggingFace path: "alphaXiv/trm-model-maze/maze_hard_step_32550"
+                parts = checkpoint_path.split("/", 2)
+                if len(parts) < 3:
+                    raise ValueError(
+                        f"HuggingFace path must be in format 'username/repo/filename'. Got: {checkpoint_path}"
+                    )
+                
+                repo_id = f"{parts[0]}/{parts[1]}"
+                filename = parts[2]
+                
+                print(f"Downloading from HuggingFace: repo={repo_id}, file={filename}")
+                checkpoint_path = hf_hub_download(repo_id=repo_id, filename=filename)
+                print(f"Downloaded to: {checkpoint_path}")
+                
+            except ImportError:
+                raise ImportError(
+                    "huggingface_hub is required to load checkpoints from HuggingFace. "
+                    "Install it with: pip install huggingface_hub"
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to download checkpoint from HuggingFace: {e}")
+
         # Load state dict
-        state_dict = torch.load(config.load_checkpoint, map_location="cuda")
+        state_dict = torch.load(checkpoint_path, map_location="cuda")
 
         # Always strip compile/DataParallel style prefixes so keys match the
         # non-compiled module. We won't be using torch.compile in eval.
