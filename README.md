@@ -33,7 +33,7 @@ pip install -e .
 # wandb login
 ```
 
-## Datasets
+## Step 1: build dataset
 
 All builders output into `data/<dataset-name>/` with the expected `train/` and `test/` splits plus metadata.
 
@@ -64,7 +64,58 @@ python -m trm.data.build_sudoku_dataset \
 python -m trm.data.build_maze_dataset
 ```
 
-## Training
+## Step 2: Evaluate existing checkpoints
+
+We provide pre-trained model weights to evaluate on:
+
+- Maze (30x30 TRM weights): https://huggingface.co/alphaXiv/trm-model-maze
+- Sudoku (TRM weights): https://huggingface.co/alphaXiv/trm-model-sudoku
+- ARC AGI 1 (TRM attention weights): https://huggingface.co/alphaXiv/trm-model-arc-agi-1
+
+Single GPU / CPU smoke test (one batch), loads model from HF or local path:
+
+```bash
+python scripts/run_eval_only.py \
+  --checkpoint alphaxiv/trm-model-maze/maze_hard_step_32550 \
+  --dataset data/maze-30x30-hard-1k \
+  --one-batch
+```
+
+Multi-GPU full eval:
+
+```bash
+torchrun --nproc_per_node=8 scripts/run_eval_only.py \
+  --checkpoint trained_models/step_32550_sudoku_epoch50k \
+  --dataset data/sudoku-extreme-1k-aug-1000 \
+  --outdir checkpoints/sudoku_eval_run \
+  --eval-save-outputs inputs labels puzzle_identifiers preds \
+  --global-batch-size 1536 \
+  --apply-ema
+```
+
+Maze example:
+
+```bash
+torchrun --nproc_per_node=8 scripts/run_eval_only.py \
+  --checkpoint trained_models/maze_hard_step_32550 \
+  --dataset data/maze-30x30-hard-1k \
+  --outdir checkpoints/maze_eval_run \
+  --global-batch-size 1536 \
+  --apply-ema
+```
+
+ARC-AGI-1 example (attention):
+
+```bash
+torchrun --nproc_per_node=8 scripts/run_eval_only.py \
+  --checkpoint trained_models/step_259320_arc_ag1_attn_type_h3l4 \
+  --dataset data/arc1concept-aug-1000 \
+  --outdir checkpoints/arc1_eval_run \
+  --global-batch-size 1024 \
+  --apply-ema
+```
+
+## Step 3: Training your own weights!
 
 Training is configured via Hydra. CLI overrides like `arch.L_layers=2` are applied on top of `config/cfg_pretrain.yaml` and the chosen `config/arch/*.yaml`.
 
@@ -181,61 +232,6 @@ torchrun --nproc-per-node 1 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
   +run_name=${run_name} ema=True
 ```
 
-## Evaluate checkpoints (local)
-
-Use the evaluation-only runner that mirrors `scripts/train.py` evaluation.
-
-Single GPU / CPU smoke test (one batch), loads model from HF or local path:
-
-```bash
-python scripts/run_eval_only.py \
-  --checkpoint alphaxiv/trm-model-maze/maze_hard_step_32550 \
-  --dataset data/maze-30x30-hard-1k \
-  --one-batch
-```
-
-Multi-GPU full eval:
-
-```bash
-torchrun --nproc_per_node=8 scripts/run_eval_only.py \
-  --checkpoint trained_models/step_32550_sudoku_epoch50k \
-  --dataset data/sudoku-extreme-1k-aug-1000 \
-  --outdir checkpoints/sudoku_eval_run \
-  --eval-save-outputs inputs labels puzzle_identifiers preds \
-  --global-batch-size 1536 \
-  --apply-ema
-```
-
-Maze example:
-
-```bash
-torchrun --nproc_per_node=8 scripts/run_eval_only.py \
-  --checkpoint trained_models/maze_hard_step_32550 \
-  --dataset data/maze-30x30-hard-1k \
-  --outdir checkpoints/maze_eval_run \
-  --global-batch-size 1536 \
-  --apply-ema
-```
-
-ARC-AGI-1 example (attention):
-
-```bash
-torchrun --nproc_per_node=8 scripts/run_eval_only.py \
-  --checkpoint trained_models/step_259320_arc_ag1_attn_type_h3l4 \
-  --dataset data/arc1concept-aug-1000 \
-  --outdir checkpoints/arc1_eval_run \
-  --global-batch-size 1024 \
-  --apply-ema
-```
-
-## Pretrained Weights
-
-If you'd like to download the pretrained model weights used in experiments, they are available on Hugging Face:
-
-- Maze (30x30 TRM weights): https://huggingface.co/alphaXiv/trm-model-maze
-- Sudoku (TRM weights): https://huggingface.co/alphaXiv/trm-model-sudoku
-- ARC AGI 1 (TRM attention weights): https://huggingface.co/alphaXiv/trm-model-arc-agi-1
-
 ## Reproducing paper numbers
 
 - Build the exact datasets above (`arc1concept-aug-1000`, `arc2concept-aug-1000`, `maze-30x30-hard-1k`, `sudoku-extreme-1k-aug-1000`).
@@ -245,7 +241,7 @@ If you'd like to download the pretrained model weights used in experiments, they
 
 ## Reproduction Report
 
-For detailed analysis of independent reproduction attempts and comparison with published claims, see [REPORT.md](REPORT.md).
+For detailed analysis of independent reproduction attempts and comparison with published claims, see [docs/REPORT.md](REPORT.md).
 
 This report includes evaluation results, performance comparisons, and insights from reproducing the TRM paper's results across Maze-Hard, ARC-AGI-1, and Sudoku-Extreme benchmarks.
 
@@ -256,4 +252,4 @@ This report includes evaluation results, performance comparisons, and insights f
 - Checkpoints and EMA: training saves EMA by default when `ema=True`; the eval script applies EMA unless disabled.
 
 
-This code is based on the Hierarchical Reasoning Model [code](https://github.com/sapientinc/HRM) and the Hierarchical Reasoning Model Analysis [code](https://github.com/arcprize/hierarchical-reasoning-model-analysis).
+This code is based on the original Tiny Recursive Model [code](https://github.com/SamsungSAILMontreal/TinyRecursiveModels).
