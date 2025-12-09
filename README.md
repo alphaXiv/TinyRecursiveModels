@@ -175,8 +175,8 @@ Single GPU / CPU smoke test (one batch):
 
 ```bash
 python scripts/run_eval_only.py \
-  --checkpoint trained_models/step_32550_sudoku_epoch50k \
-  --dataset data/sudoku-extreme-1k-aug-1000 \
+  --checkpoint alphaxiv/trm-model-maze/maze_hard_step_32550 \
+  --dataset data/maze-30x30-hard-1k \
   --one-batch
 ```
 
