@@ -12,15 +12,16 @@ from trm.training.config import PretrainConfig, TrainState
 from trm.training.checkpoint import load_checkpoint
 from trm.utils import load_model_class
 
-# Import dependencies that may not be installed in eval-only environments
+# Import optimizer from our vendored implementation
 try:
     from trm.training.optimizers import AdamATan2
 except Exception:
     AdamATan2 = None
 
-# Import from original locations (these haven't moved yet)
-from puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig, PuzzleDatasetMetadata
-from models.sparse_embedding import CastedSparseEmbeddingSignSGD_Distributed
+# Import from trm package
+from trm.data.puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig
+from trm.data.common import PuzzleDatasetMetadata
+from trm.models.sparse_embedding import CastedSparseEmbeddingSignSGD_Distributed
 
 
 def create_dataloader(config: PretrainConfig, split: str, rank: int, world_size: int, **kwargs):

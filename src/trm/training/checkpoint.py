@@ -98,4 +98,4 @@ def load_checkpoint(model: nn.Module, config: PretrainConfig):
         except Exception:
             pass
         
-    model.load_state_dict(state_dict, assign=True)
+        model.load_state_dict(state_dict, assign=True)

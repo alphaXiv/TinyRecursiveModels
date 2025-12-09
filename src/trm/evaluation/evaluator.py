@@ -9,7 +9,7 @@ from trm.training.config import PretrainConfig, TrainState
 from trm.utils import load_model_class
 
 # Import from original locations (these haven't moved yet)
-from puzzle_dataset import PuzzleDatasetMetadata
+from trm.data.puzzle_dataset import PuzzleDatasetMetadata
 
 
 def create_evaluators(config: PretrainConfig, eval_metadata: PuzzleDatasetMetadata) -> List[Any]:
@@ -27,7 +27,7 @@ def create_evaluators(config: PretrainConfig, eval_metadata: PuzzleDatasetMetada
     evaluators = []
     for cfg in config.evaluators:
         for data_path in data_paths:
-            cls = load_model_class(cfg.name, "evaluators.")(
+            cls = load_model_class(cfg.name, "trm.evaluation.")(
                 data_path=data_path, eval_metadata=eval_metadata, **cfg.__pydantic_extra__
             )  # type: ignore
             evaluators.append(cls)

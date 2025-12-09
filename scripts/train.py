@@ -60,7 +60,7 @@ from omegaconf import DictConfig
 # optimizer package isn't installed. If unavailable, AdamATan2 will be
 # set to None and optimizer construction should be skipped for eval.
 try:
-    from adam_atan2 import AdamATan2
+    from trm.training.optimizers import AdamATan2
 except Exception:
     AdamATan2 = None
 

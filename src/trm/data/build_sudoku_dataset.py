@@ -5,7 +5,7 @@ import json
 import numpy as np
 
 from argdantic import ArgParser
-from pydantic import BaseModel
+from pydantic import BaseModel 
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 

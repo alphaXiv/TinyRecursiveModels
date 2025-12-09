@@ -28,15 +28,12 @@ python3 -m venv .venv && source .venv/bin/activate
 python -m pip install --upgrade pip wheel setuptools
 
 # 2) Install PyTorch (pick ONE that fits your machine)
-# CPU only:
-pip install torch torchvision torchaudio
 # CUDA 12.6 wheels (Linux w/ NVIDIA drivers):
-# pip install --pre --upgrade torch torchvision torchaudio \
-#   --index-url https://download.pytorch.org/whl/nightly/cu126
+pip install --pre --upgrade torch torchvision torchaudio \
+  --index-url https://download.pytorch.org/whl/nightly/cu128
 
 # 3) Install project deps and optimizer
-pip install -r requirements.txt
-pip install --no-cache-dir --no-build-isolation adam-atan2
+pip install -e .
 
 # 4) Optional: log to Weights & Biases
 # wandb login

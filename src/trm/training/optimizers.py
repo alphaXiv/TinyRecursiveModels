@@ -3,11 +3,41 @@
 # NOTE: Torch needs to be imported before the custom
 # extensions. Otherwise libc10.so cannot be found.
 import torch
-import adam_atan2_backend
-
+import os
 from typing import List, Tuple, Union
 from torch import Tensor
 from torch.optim.optimizer import Optimizer, ParamsT
+
+# Compile the CUDA extension on-the-fly using torch.utils.cpp_extension.load
+# This ensures the backend is built properly with the correct CUDA architecture
+_adam_atan2_backend = None
+
+def _get_adam_backend():
+    global _adam_atan2_backend
+    if _adam_atan2_backend is None:
+        from torch.utils.cpp_extension import load
+        
+        # Get the directory containing this file
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        csrc_dir = os.path.join(current_dir, "adam_atan2_csrc")
+        
+        # Compile the CUDA extension
+        _adam_atan2_backend = load(
+            name="adam_atan2_backend",
+            sources=[
+                os.path.join(csrc_dir, "ops.cu"),
+                os.path.join(csrc_dir, "adam_atan2.cu"),
+            ],
+            extra_include_paths=[csrc_dir],
+            extra_cflags=["-O2", "-std=c++17"],
+            extra_cuda_cflags=[
+                "-O2",
+                "-std=c++17",
+                "--expt-extended-lambda",
+            ],
+            verbose=False,
+        )
+    return _adam_atan2_backend
 
 
 class AdamATan2(Optimizer):
@@ -134,7 +164,8 @@ def _adam_atan2(
                        device_exp_avg_sqs,
                        device_state_steps, ), _) in grouped_tensors.items():
         torch._foreach_add_(device_state_steps, 1)
-        adam_atan2_backend.adam_atan2_cuda_impl_(
+        backend = _get_adam_backend()
+        backend.adam_atan2_cuda_impl_(
             device_params,
             device_grads,
             device_exp_avgs,

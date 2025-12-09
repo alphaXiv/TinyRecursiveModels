@@ -26,4 +26,5 @@ dependencies = [
     "huggingface_hub",
     "packaging",
     "numba",
+    "ninja",
 ]

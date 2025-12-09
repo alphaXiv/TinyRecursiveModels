@@ -1,10 +1,10 @@
 
-"""Distributed evaluation runner that reuses pretrain.py evaluate() behavior.
+"""Distributed evaluation runner using the trm library.
 
 This script constructs a PretrainConfig from a YAML file (default: config/cfg_pretrain.yaml),
 overrides a few fields from the CLI (checkpoint path, dataset path, eval_save_outputs),
 creates the test dataloader and model (loading checkpoint), and runs evaluate()
-exactly like pretrain.py. It is safe to run with torchrun for multi-GPU evaluation.
+using the trm library functions. It is safe to run with torchrun for multi-GPU evaluation.
 
 Example (single-process, local checkpoint):
   python scripts/run_eval_only.py --checkpoint /path/to/step_50000 --dataset data/maze-30x30-hard-1k
@@ -34,17 +34,19 @@ from contextlib import nullcontext
 import torch.backends.cudnn as cudnn
 from hydra import initialize, compose
 from omegaconf import OmegaConf
-from models.ema import EMAHelper
+from trm.models.ema import EMAHelper
 from glob import glob
 import math
 
-# Reuse functions and classes from pretrain.py
-from pretrain import (
-    create_dataloader,
-    create_evaluators,
-    init_train_state,
-    evaluate,
+# Import functions and classes from trm library
+from trm.training import (
     PretrainConfig,
+    create_dataloader,
+    init_train_state,
+)
+from trm.evaluation import (
+    create_evaluators,
+    evaluate,
 )
 
 # Prefer new TF32 API controls to avoid deprecation warnings and ensure predictable math.
