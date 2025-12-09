@@ -1,4 +1,4 @@
-name: recursive_reasoning.transformers_baseline@Model_ACTV2
+name: architectures.transformers_baseline@Model_ACTV2
 loss:
   name: losses@ACTLossHead
   loss_type: stablemax_cross_entropy

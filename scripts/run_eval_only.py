@@ -1,13 +1,16 @@
 
-"""Distributed evaluation runner that reuses pretrain.py evaluate() behavior.
+"""Distributed evaluation runner using the trm library.
 
 This script constructs a PretrainConfig from a YAML file (default: config/cfg_pretrain.yaml),
 overrides a few fields from the CLI (checkpoint path, dataset path, eval_save_outputs),
 creates the test dataloader and model (loading checkpoint), and runs evaluate()
-exactly like pretrain.py. It is safe to run with torchrun for multi-GPU evaluation.
+using the trm library functions. It is safe to run with torchrun for multi-GPU evaluation.
 
-Example (single-process):
+Example (single-process, local checkpoint):
   python scripts/run_eval_only.py --checkpoint /path/to/step_50000 --dataset data/maze-30x30-hard-1k
+
+Example (single-process, HuggingFace checkpoint):
+  python scripts/run_eval_only.py --checkpoint alphaXiv/trm-model-maze/maze_hard_step_32550 --dataset data/maze-30x30-hard-1k
 
 Example (distributed via torchrun):
   torchrun --nproc_per_node=8 scripts/run_eval_only.py --checkpoint /path/to/step_50000 --dataset /data/maze-30x30-hard-1k
@@ -19,6 +22,10 @@ import sys
 import argparse
 import yaml
 import copy
+
+# Add project root to Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import torch
 import torch.distributed as dist
 import numpy as np
@@ -27,17 +34,19 @@ from contextlib import nullcontext
 import torch.backends.cudnn as cudnn
 from hydra import initialize, compose
 from omegaconf import OmegaConf
-from models.ema import EMAHelper
+from trm.models.ema import EMAHelper
 from glob import glob
 import math
 
-# Reuse functions and classes from pretrain.py
-from pretrain import (
-    create_dataloader,
-    create_evaluators,
-    init_train_state,
-    evaluate,
+# Import functions and classes from trm library
+from trm.training import (
     PretrainConfig,
+    create_dataloader,
+    init_train_state,
+)
+from trm.evaluation import (
+    create_evaluators,
+    evaluate,
 )
 
 # Prefer new TF32 API controls to avoid deprecation warnings and ensure predictable math.
@@ -60,7 +69,7 @@ def parse_args():
     """
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='config/cfg_pretrain.yaml', help='YAML config file (pydantic fields)')
-    p.add_argument('--checkpoint', required=True, help='Path to model checkpoint file to load')
+    p.add_argument('--checkpoint', required=True, help='Path to model checkpoint file. Local path or HuggingFace format: "username/repo/filename"')
     p.add_argument('--dataset', required=True, help='Path to dataset directory to evaluate (overrides data_paths_test)')
     p.add_argument('--outdir', default=None, help='Directory to save evaluation preds (overrides checkpoint_path in config)')
     p.add_argument('--eval-save-outputs', nargs='+', default=['inputs','labels','puzzle_identifiers','preds'], help='List of keys to save during evaluation')
@@ -114,11 +123,13 @@ def main():
     objects = [None]
     if RANK == 0:
     # Derive config directory and base name from args.config
-        config_path = os.path.dirname(args.config) or 'config'
         config_name = os.path.splitext(os.path.basename(args.config))[0]
+        # Hydra's config_path is relative to the script file location, not cwd
+        # Since this script is in scripts/, we need to go up one level to find config/
+        config_path = "../config"
 
     # Compose Hydra config; CLI overrides applied programmatically below
-        with initialize(config_path=config_path, job_name="run_eval_only"):
+        with initialize(version_base=None, config_path=config_path, job_name="run_eval_only"):
             hydra_cfg = compose(config_name=config_name)
 
     # Convert to plain dict (resolve interpolations)
