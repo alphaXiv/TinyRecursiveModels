@@ -1,2 +1,6 @@
 data/
 trained_models/
+
+# Python cache files
+__pycache__/
+*.pyc
