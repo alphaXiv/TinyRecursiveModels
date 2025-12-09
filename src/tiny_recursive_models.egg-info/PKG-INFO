@@ -1,3 +1,26 @@
+Metadata-Version: 2.4
+Name: tiny-recursive-models
+Version: 0.1.0
+Summary: Recursive reasoning with tiny neural networks for solving ARC-AGI and other puzzles
+Author: alphaXiv
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: torch>=2.0.0
+Requires-Dist: einops
+Requires-Dist: tqdm
+Requires-Dist: coolname
+Requires-Dist: pydantic>=2.0.0
+Requires-Dist: argdantic
+Requires-Dist: wandb
+Requires-Dist: omegaconf
+Requires-Dist: hydra-core
+Requires-Dist: huggingface_hub
+Requires-Dist: packaging
+Requires-Dist: numba
+Dynamic: license-file
+
 # Less is More: Recursive Reasoning with Tiny Networks
 
 This is the codebase for the paper: "Less is More: Recursive Reasoning with Tiny Networks". TRM is a recursive reasoning approach that achieves amazing scores of 45% on ARC-AGI-1 and 8% on ARC-AGI-2 using a tiny 7M parameters neural network.
