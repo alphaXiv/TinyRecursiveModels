@@ -185,7 +185,7 @@ torchrun --nproc-per-node 1 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
 
 Use the evaluation-only runner that mirrors `scripts/train.py` evaluation.
 
-Single GPU / CPU smoke test (one batch):
+Single GPU / CPU smoke test (one batch), loads model from HF or local path:
 
 ```bash
 python scripts/run_eval_only.py \
@@ -254,7 +254,6 @@ This report includes evaluation results, performance comparisons, and insights f
 - PyTorch install: pick wheels matching your CUDA; on macOS (CPU/MPS) training will be very slow — prefer Linux + NVIDIA GPU for training.
 - NCCL errors: ensure you run under `torchrun` on a Linux box with GPUs and that `nvidia-smi` shows all devices.
 - Checkpoints and EMA: training saves EMA by default when `ema=True`; the eval script applies EMA unless disabled.
-- Missing optimizer: install `adam-atan2` (see quickstart) for training. Evaluation-only runs do not require it.
 
 
 This code is based on the Hierarchical Reasoning Model [code](https://github.com/sapientinc/HRM) and the Hierarchical Reasoning Model Analysis [code](https://github.com/arcprize/hierarchical-reasoning-model-analysis).
