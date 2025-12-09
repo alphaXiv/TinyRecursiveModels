@@ -48,14 +48,14 @@ All builders output into `data/<dataset-name>/` with the expected `train/` and `
 
 ```bash
 # ARC-AGI-1 (uses files in kaggle/combined already in this repo)
-python -m dataset.build_arc_dataset \
+python -m trm.data.build_arc_dataset \
   --input-file-prefix kaggle/combined/arc-agi \
   --output-dir data/arc1concept-aug-1000 \
   --subsets training evaluation concept \
   --test-set-name evaluation
 
 # ARC-AGI-2
-python -m dataset.build_arc_dataset \
+python -m trm.data.build_arc_dataset \
   --input-file-prefix kaggle/combined/arc-agi \
   --output-dir data/arc2concept-aug-1000 \
   --subsets training2 evaluation2 concept \
@@ -64,13 +64,13 @@ python -m dataset.build_arc_dataset \
 # Note: don't train on both ARC-AGI-1 and ARC-AGI-2 simultaneously if you plan to evaluate both; ARC-AGI-2 train includes some ARC-AGI-1 eval puzzles.
 
 # Sudoku-Extreme (1k base, 1k augments)
-python dataset/build_sudoku_dataset.py \
+python -m trm.data.build_sudoku_dataset \
   --output-dir data/sudoku-extreme-1k-aug-1000 \
   --subsample-size 1000 \
   --num-aug 1000
 
 # Maze-Hard (30x30)
-python dataset/build_maze_dataset.py
+python -m trm.data.build_maze_dataset
 ```
 
 ## Training
