@@ -145,6 +145,8 @@ torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
 
 ### Maze-Hard 30x30 (attention)
 
+Multi-GPU (8 GPUs):
+
 ```bash
 run_name="pretrain_att_maze30x30"
 torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
@@ -157,6 +159,24 @@ torchrun --nproc-per-node 8 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nn
   arch.L_layers=2 \
   arch.H_cycles=3 arch.L_cycles=4 \
   global_batch_size=1536 lr_warmup_steps=4000 \
+  checkpoint_every_eval=True \
+  +run_name=${run_name} ema=True
+```
+
+Single GPU (1x A100 40GB):
+
+```bash
+run_name="pretrain_att_maze30x30"
+torchrun --nproc-per-node 1 --rdzv_backend=c10d --rdzv_endpoint=localhost:0 --nnodes=1 \
+  scripts/train.py \
+  arch=trm \
+  data_paths="[data/maze-30x30-hard-1k]" \
+  evaluators="[]" \
+  epochs=50000 eval_interval=5000 \
+  lr=2e-4 puzzle_emb_lr=1e-4 weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+  arch.L_layers=2 \
+  arch.H_cycles=3 arch.L_cycles=4 \
+  global_batch_size=64 lr_warmup_steps=4000 \
   checkpoint_every_eval=True \
   +run_name=${run_name} ema=True
 ```
