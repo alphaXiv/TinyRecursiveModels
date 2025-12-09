@@ -1,4 +1,4 @@
-name: recursive_reasoning.hrm@HierarchicalReasoningModel_ACTV1
+name: architectures.hrm@HierarchicalReasoningModel_ACTV1
 loss:
   name: losses@ACTLossHead
   loss_type: stablemax_cross_entropy

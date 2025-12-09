@@ -1,3 +1,5 @@
+"""ARC-AGI evaluator with pass@k voting."""
+
 from typing import Dict, Sequence, Optional
 import os
 import json
@@ -6,8 +8,9 @@ import torch
 import numpy as np
 import torch.distributed as dist
 
-from dataset.build_arc_dataset import inverse_aug, grid_hash, arc_grid_to_np
-from dataset.common import PuzzleDatasetMetadata
+from trm.data.build_arc_dataset import inverse_aug, grid_hash, arc_grid_to_np
+from trm.data.common import PuzzleDatasetMetadata
+
 
 def _crop_np(grid: np.ndarray) -> np.ndarray:
     """Find maximum-sized rectangle without any EOS token (values outside [2, 11]).
@@ -38,6 +41,8 @@ def _crop_np(grid: np.ndarray) -> np.ndarray:
 
 
 class ARC:
+    """ARC-AGI task evaluator with pass@k metrics and submission generation."""
+    
     required_outputs = {"inputs", "puzzle_identifiers", "q_halt_logits", "preds"}
     
     def __init__(self, data_path: str, 
@@ -62,12 +67,19 @@ class ARC:
         self._local_preds = {}
         
     def begin_eval(self):
+        """Reset evaluator state for a new evaluation run."""
         if not self.aggregated_voting:
             # Clear previous predictions
             self._local_hmap = {}
             self._local_preds = {}
     
     def update_batch(self, batch: Dict[str, torch.Tensor], preds: Dict[str, torch.Tensor]):
+        """Process one batch of predictions.
+        
+        Args:
+            batch: Input batch (inputs, labels, puzzle_identifiers)
+            preds: Model predictions (preds, q_halt_logits)
+        """
         # Collect required outputs to CPU
         outputs = {}
         q_values = None
@@ -106,6 +118,17 @@ class ARC:
             self._local_preds[orig_name][input_hash].append((pred_hash, float(q)))
     
     def result(self, save_path: Optional[str], rank: int, world_size: int, group: Optional[torch.distributed.ProcessGroup] = None) -> Optional[Dict[str, float]]:
+        """Compute final metrics after all batches processed.
+        
+        Args:
+            save_path: Directory to save submission file
+            rank: Current process rank
+            world_size: Total number of processes
+            group: Process group for distributed communication
+            
+        Returns:
+            Dictionary of pass@k metrics (only on rank 0)
+        """
         # Gather predictions to rank 0 for voting
         global_hmap_preds = [None for _ in range(world_size)] if rank == 0 else None
         dist.gather_object((self._local_hmap, self._local_preds), global_hmap_preds, dst=0, group=group)
@@ -137,7 +160,7 @@ class ARC:
                         p_map[h][1] += q
                         
                 if not len(p_map):
-                    print (f"Puzzle {name} has no predictions.")
+                    print(f"Puzzle {name} has no predictions.")
                     continue
 
                 for h, stats in p_map.items():
